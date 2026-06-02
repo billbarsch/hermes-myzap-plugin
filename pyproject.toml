@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-myzap-plugin"
+version = "0.1.0"
+description = "Hermes Agent platform plugin for MyZap WhatsApp API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Geranet Ponto" }]
+dependencies = ["httpx>=0.24"]
+keywords = ["hermes-agent", "myzap", "whatsapp", "gateway", "plugin"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.entry-points."hermes_agent.plugins"]
+myzap = "hermes_myzap_plugin.adapter:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hermes_myzap_plugin"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"

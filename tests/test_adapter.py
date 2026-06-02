@@ -1,0 +1,313 @@
+import asyncio
+import json
+from datetime import datetime, timezone
+
+import pytest
+
+from hermes_myzap_plugin.adapter import (
+    MyZapAdapter,
+    PlatformConfig,
+    check_requirements,
+    extract_messages,
+    iso_utc,
+    is_public_operational_notice,
+    is_widget_destination,
+    message_destination,
+    normalize_number,
+    verify_webhook_signature,
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_hermes_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+
+def test_profile_guard_blocks_wrong_profile(monkeypatch):
+    monkeypatch.setenv("MYZAP_API_KEY", "x")
+    monkeypatch.setenv("HERMES_PROFILE", "pontoprogramador3")
+    monkeypatch.setenv("MYZAP_HERMES_PROFILE", "pontoatendente")
+    assert check_requirements() is False
+
+
+def test_profile_guard_allows_pontoatendente(monkeypatch):
+    monkeypatch.setenv("MYZAP_API_KEY", "x")
+    monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+    monkeypatch.setenv("MYZAP_HERMES_PROFILE", "pontoatendente")
+    assert check_requirements() is True
+
+
+def test_normalize_number():
+    assert normalize_number("+55 (62) 99999-0000@s.whatsapp.net") == "5562999990000"
+
+
+def test_message_destination_preserves_widget_remote_jid():
+    msg = {"remoteJid": "widget_abc123def45678", "conversaId": 7}
+    assert message_destination(msg) == "widget_abc123def45678"
+
+
+def test_widget_destination_requires_exact_hash_shape():
+    assert is_widget_destination("widget_abc123def45678") is True
+    assert is_widget_destination("widget_abc123def456") is False
+    assert is_widget_destination("widget_ABC123DEF45678") is False
+    assert is_widget_destination("widget_abc123def4567890") is False
+
+
+def test_message_destination_normalizes_whatsapp_jid():
+    msg = {"remoteJid": "+55 (62) 99999-0000@s.whatsapp.net"}
+    assert message_destination(msg) == "5562999990000"
+
+
+def test_iso_utc_milliseconds():
+    dt = datetime(2026, 5, 31, 12, 0, 0, tzinfo=timezone.utc)
+    assert iso_utc(dt) == "2026-05-31T12:00:00.000Z"
+
+
+def test_extract_messages_nested():
+    assert extract_messages({"data": {"mensagens": [{"id": 1}]}}) == [{"id": 1}]
+
+
+def test_verify_webhook_signature():
+    secret = "s3"
+    body = b'{"ok":true}'
+    import hmac, hashlib
+    sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    assert verify_webhook_signature(secret, body, sig) is True
+    assert verify_webhook_signature(secret, body, "sha256=bad") is False
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = text or json.dumps(self._payload)
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class FakeClient:
+    def __init__(self, payload):
+        self.payload = payload
+        self.get_calls = []
+        self.posts = []
+
+    async def get(self, url, params=None, headers=None):
+        self.get_calls.append((url, dict(params or {}), headers))
+        return FakeResponse(payload=self.payload)
+
+    async def post(self, url, json=None, headers=None):
+        self.posts.append((url, json, headers))
+        return FakeResponse(status_code=201, payload={"messageId": "sent-1"})
+
+
+class SequenceClient(FakeClient):
+    def __init__(self, responses):
+        super().__init__({})
+        self.responses = list(responses)
+
+    async def get(self, url, params=None, headers=None):
+        self.get_calls.append((url, dict(params or {}), headers))
+        return self.responses.pop(0)
+
+
+def test_poll_state_survives_restart_and_blocks_replay(monkeypatch, tmp_path):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        state_path = tmp_path / "myzap-state.json"
+        payload = {
+            "mensagens": [
+                {"id": 100, "direcao": "RECEBIDA", "conteudo": "Oi", "remoteJid": "widget_abc123def45678", "conversaId": 8, "criadoEm": "2026-05-31T12:00:00.000Z"},
+            ],
+            "meta": {"nextCursor": "2026-05-31T12:00:00.000Z,100"},
+        }
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key", "state_path": str(state_path)})
+
+        first = MyZapAdapter(cfg)
+        first._http_client = FakeClient(payload)
+        first_events = []
+        first.handle_message = lambda event: first_events.append(event) or asyncio.sleep(0)
+        assert await first.poll_once() == 1
+        assert len(first_events) == 1
+
+        restarted = MyZapAdapter(cfg)
+        restarted._http_client = FakeClient(payload)
+        restarted_events = []
+        restarted.handle_message = lambda event: restarted_events.append(event) or asyncio.sleep(0)
+        assert await restarted.poll_once() == 0
+        assert restarted_events == []
+
+    asyncio.run(run())
+
+
+def test_poll_once_clears_rejected_cursor_and_retries(monkeypatch, tmp_path):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        state_path = tmp_path / "myzap-state.json"
+        state_path.write_text(json.dumps({"cursor": "1081", "since": "2026-05-31T12:00:00.000Z", "seen": []}), encoding="utf-8")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key", "state_path": str(state_path)})
+        adapter = MyZapAdapter(cfg)
+        adapter._http_client = SequenceClient([
+            FakeResponse(status_code=400, payload={"erro": "CURSOR_INVALIDO"}, text="CURSOR_INVALIDO"),
+            FakeResponse(payload={"mensagens": [], "meta": {"nextCursor": "2026-05-31T12:00:01.000Z,1082"}}),
+        ])
+        assert await adapter.poll_once() == 0
+        assert "cursor" in adapter._http_client.get_calls[0][1]
+        assert "cursor" not in adapter._http_client.get_calls[1][1]
+        assert adapter._cursor == "2026-05-31T12:00:01.000Z,1082"
+
+    asyncio.run(run())
+
+
+def test_poll_once_dispatches_inbound_text(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({
+            "mensagens": [
+                {"id": 10, "direcao": "RECEBIDA", "conteudo": "Oi", "numero": "+55 62 99999-0000", "conversaId": 7, "criadoEm": "2026-05-31T12:00:00.000Z"},
+                {"id": 11, "direcao": "ENVIADA", "conteudo": "eco", "numero": "+55 62 99999-0000", "conversaId": 7, "criadoEm": "2026-05-31T12:00:01.000Z"},
+            ]
+        })
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 1
+        assert events[0].text == "Oi"
+        assert events[0].source.chat_id == "7"
+        assert events[0].source.user_id == "5562999990000"
+
+    asyncio.run(run())
+
+
+def test_poll_once_dispatches_widget_inbound_with_replyable_chat_id(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({
+            "mensagens": [
+                {"id": 20, "direcao": "RECEBIDA", "conteudo": "Oi widget", "remoteJid": "widget_abc123def45678", "conversaId": 8, "criadoEm": "2026-05-31T12:00:00.000Z"},
+            ]
+        })
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 1
+        assert events[0].text == "Oi widget"
+        assert events[0].source.chat_id == "widget_abc123def45678"
+        assert events[0].source.user_id == "widget_abc123def45678"
+
+    asyncio.run(run())
+
+
+def test_poll_once_allows_valid_widget_even_when_numbers_allowlisted(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key", "allowed_numbers": "5562999990000"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({
+            "mensagens": [
+                {"id": 21, "direcao": "RECEBIDA", "conteudo": "Oi widget", "remoteJid": "widget_abc123def45678", "conversaId": 8, "criadoEm": "2026-05-31T12:00:00.000Z"},
+            ]
+        })
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 1
+        assert events[0].source.chat_id == "widget_abc123def45678"
+
+    asyncio.run(run())
+
+
+def test_poll_once_rejects_malformed_widget_destination(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({
+            "mensagens": [
+                {"id": 22, "direcao": "RECEBIDA", "conteudo": "Oi widget", "remoteJid": "widget_abc123def456", "conversaId": 8, "criadoEm": "2026-05-31T12:00:00.000Z"},
+            ]
+        })
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 0
+        assert events == []
+
+    asyncio.run(run())
+
+
+def test_send_posts_widget_destination(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({})
+        a._http_client = fake
+        result = await a.send("widget_abc123def45678", "Resposta widget")
+        assert result.success is True
+        assert fake.posts[0][0] == "https://example.test/api/v1/mensagens/texto"
+        assert fake.posts[0][1] == {"numero": "widget_abc123def45678", "texto": "Resposta widget"}
+
+    asyncio.run(run())
+
+
+def test_send_posts_text(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({})
+        a._http_client = fake
+        result = await a.send("+55 62 99999-0000", "Resposta")
+        assert result.success is True
+        assert fake.posts[0][0] == "https://example.test/api/v1/mensagens/texto"
+        assert fake.posts[0][1] == {"numero": "5562999990000", "texto": "Resposta"}
+
+    asyncio.run(run())
+
+def test_public_operational_notice_detection():
+    assert is_public_operational_notice("No home channel is set for Myzap. Type /sethome to configure it.") is True
+    assert is_public_operational_notice("Confirmado, atendimento normal") is False
+
+
+def test_send_suppresses_home_channel_notice_for_widget(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({})
+        a._http_client = fake
+        result = await a.send("widget_abc123def45678", "No home channel is set for Myzap. Type /sethome to configure it.")
+        assert result.success is True
+        assert result.message_id == "suppressed-home-channel-notice"
+        assert fake.posts == []
+
+    asyncio.run(run())

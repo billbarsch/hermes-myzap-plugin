@@ -1,0 +1,8 @@
+name: myzap
+version: 0.1.0
+description: Hermes platform adapter for the MyZap WhatsApp API (Geranet Ponto)
+author: Geranet Ponto
+kind: platform
+requires_env:
+  - MYZAP_BASE_URL
+  - MYZAP_API_KEY
