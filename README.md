@@ -1,6 +1,8 @@
 # hermes-myzap-plugin
 
-Plugin de plataforma Hermes Agent para integrar o MyZap (WhatsApp) ao perfil exclusivo `pontoatendente` do Geranet Ponto.
+Plugin de plataforma para conectar agentes do Hermes Agent ao MyZap, permitindo que um agente receba e responda mensagens do WhatsApp usando a API do MyZap.
+
+Ele funciona como um conector de plataforma, no mesmo papel de conectores como Telegram, WhatsApp, Discord ou outros canais de atendimento: você instala no perfil Hermes desejado, configura a chave da API do MyZap e habilita a plataforma `myzap`.
 
 Status: v0.1 text-only, instalável/testável localmente, sem credenciais no repositório.
 
@@ -9,19 +11,33 @@ Status: v0.1 text-only, instalável/testável localmente, sem credenciais no rep
 - Registra a plataforma `myzap` via `ctx.register_platform(...)`.
 - Recebe mensagens por polling incremental em `GET {MYZAP_BASE_URL}/mensagens`.
 - Envia respostas por `POST {MYZAP_BASE_URL}/mensagens/texto`.
-- Deduplica mensagens por `messageId`/`id`.
-- Ignora mídia no v0.1 (não baixa/anexa arquivos automaticamente).
-- Usa allowlist do próprio Hermes (`MYZAP_ALLOWED_USERS`/`MYZAP_ALLOW_ALL_USERS`) e allowlist opcional do adapter (`MYZAP_ALLOWED_NUMBERS`).
-- Falha fechado fora do perfil `pontoatendente` quando `HERMES_PROFILE`/`HERMES_PROFILE_NAME` estiver definido.
+- Deduplica mensagens por `messageId`/`id` e persiste cursor/estado para evitar replay após restart.
+- Preserva destinos de widget público no formato `widget_<hash>`.
+- Ignora mídia no v0.1; mensagens sem texto não são baixadas nem anexadas automaticamente.
+- Usa allowlist do Hermes (`MYZAP_ALLOWED_USERS`/`MYZAP_ALLOW_ALL_USERS`) e allowlist opcional do adapter (`MYZAP_ALLOWED_NUMBERS`).
+- Pode ser restringido a um perfil Hermes específico com `MYZAP_HERMES_PROFILE`, mas por padrão aceita qualquer perfil em que for instalado/configurado.
+
+## Requisitos
+
+- Hermes Agent com suporte a plugins de plataforma.
+- Python 3.10 ou superior.
+- Acesso a uma API MyZap compatível com o contrato em `docs/API_CONTRACT.md`.
+- Uma chave de API MyZap (`MYZAP_API_KEY`).
 
 ## Variáveis de ambiente
 
-Defina somente no `.env` do perfil `pontoatendente`, nunca no repositório:
+Defina as variáveis no `.env` do perfil Hermes que vai usar o MyZap. Não coloque credenciais no repositório.
+
+Obrigatórias:
 
 ```env
 MYZAP_BASE_URL=https://api.myzap.net/api/v1
-MYZAP_API_KEY=[REDACTED]
-MYZAP_HERMES_PROFILE=pontoatendente
+MYZAP_API_KEY=coloque_sua_chave_aqui
+```
+
+Recomendadas:
+
+```env
 MYZAP_ALLOWED_USERS=5562999999999
 MYZAP_HOME_NUMBER=5562999999999
 MYZAP_POLL_INTERVAL_SECONDS=10
@@ -30,45 +46,64 @@ MYZAP_POLL_LOOKBACK_SECONDS=120
 
 O adapter também aceita:
 
+- `MYZAP_HERMES_PROFILE`: restringe o plugin a um perfil Hermes específico. Se não for definido, qualquer perfil configurado pode usar o plugin.
 - `MYZAP_ALLOWED_NUMBERS`: filtro local por números, separado por vírgula.
-- `MYZAP_ALLOW_ALL_USERS=true`: libera autorização no gateway Hermes (use só em ambiente controlado).
+- `MYZAP_ALLOW_ALL_USERS=true`: libera autorização no gateway Hermes. Use somente em ambiente controlado.
 - `MYZAP_ALLOW_ALL_NUMBERS=true`: desliga o filtro local do adapter.
 - `MYZAP_CURSOR`: cursor inicial opcional.
+- `MYZAP_STATE_PATH`: caminho opcional para o arquivo de estado do polling.
 
-## Instalação local para desenvolvimento
+## Instalação para desenvolvimento
 
 ```bash
-cd /workspace/hermes-myzap-plugin
+git clone https://github.com/billbarsch/hermes-myzap-plugin.git
+cd hermes-myzap-plugin
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e '.[test]'
 pytest -q
 ```
 
-## Instalação no perfil `pontoatendente`
+No Windows PowerShell:
 
-Opção A — pacote editável/local:
-
-```bash
-# Sem push/publicação; apontar para o checkout revisado.
-PATH=/root/.local/bin:$PATH pontoatendente plugins install /workspace/hermes-myzap-plugin
+```powershell
+git clone https://github.com/billbarsch/hermes-myzap-plugin.git
+cd hermes-myzap-plugin
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Opção B — diretório de plugin do perfil:
+## Instalação em um perfil Hermes
+
+Substitua `<perfil>` pelo perfil Hermes que deve operar o canal MyZap.
+
+Opção A, pacote editável/local:
 
 ```bash
-mkdir -p /root/.hermes/profiles/pontoatendente/plugins/myzap
-cp -R plugin.yaml src/hermes_myzap_plugin/* /root/.hermes/profiles/pontoatendente/plugins/myzap/
+PATH=/root/.local/bin:$PATH <perfil> plugins install /caminho/para/hermes-myzap-plugin
 ```
 
-Depois, habilite somente no profile `pontoatendente`:
+Opção B, diretório de plugin do perfil:
 
 ```bash
-PATH=/root/.local/bin:$PATH pontoatendente config set plugins.enabled '["myzap"]'
-PATH=/root/.local/bin:$PATH pontoatendente config set platforms.myzap.enabled true
+mkdir -p /root/.hermes/profiles/<perfil>/plugins/myzap
+cp plugin.yaml /root/.hermes/profiles/<perfil>/plugins/myzap/
+cp -R src/hermes_myzap_plugin/* /root/.hermes/profiles/<perfil>/plugins/myzap/
 ```
 
-E coloque as variáveis no `.env` do perfil `pontoatendente`. Não coloque no profile Diretor, Programador, Desenvolvimento ou outros.
+Depois, habilite o plugin e a plataforma no perfil:
+
+```bash
+PATH=/root/.local/bin:$PATH <perfil> config set plugins.enabled '["myzap"]'
+PATH=/root/.local/bin:$PATH <perfil> config set platforms.myzap.enabled true
+```
+
+Coloque `MYZAP_API_KEY` e demais variáveis no `.env` desse perfil. Para limitar o plugin a esse perfil, defina também:
+
+```env
+MYZAP_HERMES_PROFILE=<perfil>
+```
 
 ## Config YAML equivalente
 
@@ -89,23 +124,45 @@ platforms:
 
 ## Teste rápido sem credenciais reais
 
+Esse teste confirma apenas se o plugin consegue carregar e se as variáveis mínimas foram encontradas.
+
 ```bash
-HERMES_PROFILE=pontoatendente MYZAP_API_KEY=[REDACTED] MYZAP_BASE_URL=https://api.myzap.net/api/v1 \
+MYZAP_API_KEY=teste MYZAP_BASE_URL=https://api.myzap.net/api/v1 \
 python - <<'PY'
 from hermes_myzap_plugin.adapter import check_requirements
 print(check_requirements())
 PY
 ```
 
+Para testar a restrição opcional por perfil:
+
+```bash
+HERMES_PROFILE=atendimento MYZAP_HERMES_PROFILE=atendimento MYZAP_API_KEY=teste \
+python - <<'PY'
+from hermes_myzap_plugin.adapter import check_requirements
+print(check_requirements())
+PY
+```
+
+## Contrato da API MyZap
+
+O contrato esperado está documentado em `docs/API_CONTRACT.md`.
+
+Resumo:
+
+- `GET /mensagens` deve retornar mensagens em ordem incremental.
+- `POST /mensagens/texto` deve aceitar `{ "numero": "...", "texto": "..." }`.
+- A autenticação usa o header `X-API-Key`.
+
 ## Limites v0.1
 
 - Sem download/envio de mídia pelo fluxo do agente.
 - Sem rota HTTP própria de webhook. O arquivo `adapter.py` inclui `verify_webhook_signature(...)` para um shim futuro validar HMAC antes de repassar eventos.
-- Polling usa a rota incremental do MyZap; se a API mudar contrato de payload, ajuste os helpers `extract_messages(...)` e campos de mensagem.
+- Polling usa a rota incremental do MyZap; se a API mudar o contrato de payload, ajuste os helpers `extract_messages(...)` e os campos de mensagem.
 
 ## Segurança operacional
 
 - Não versionar `.env`, tokens, prints de payloads reais ou conversas reais.
-- Não habilitar o plugin fora de `pontoatendente`.
-- Não usar `MYZAP_ALLOW_ALL_USERS=true` em produção sem regra explícita de atendimento.
-- Não alterar financeiro, ERP, deploy ou configurações MyZap a partir deste plugin.
+- Use allowlist em produção (`MYZAP_ALLOWED_USERS` e/ou `MYZAP_ALLOWED_NUMBERS`).
+- Não use `MYZAP_ALLOW_ALL_USERS=true` em produção sem regra explícita de atendimento.
+- Mantenha `MYZAP_API_KEY` apenas no `.env` do perfil Hermes ou em um secret manager.

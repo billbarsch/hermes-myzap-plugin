@@ -25,15 +25,21 @@ def isolated_hermes_home(monkeypatch, tmp_path):
 
 def test_profile_guard_blocks_wrong_profile(monkeypatch):
     monkeypatch.setenv("MYZAP_API_KEY", "x")
-    monkeypatch.setenv("HERMES_PROFILE", "pontoprogramador3")
-    monkeypatch.setenv("MYZAP_HERMES_PROFILE", "pontoatendente")
+    monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+    monkeypatch.setenv("MYZAP_HERMES_PROFILE", "suporte")
     assert check_requirements() is False
 
 
-def test_profile_guard_allows_pontoatendente(monkeypatch):
+def test_profile_guard_allows_any_profile_by_default(monkeypatch):
     monkeypatch.setenv("MYZAP_API_KEY", "x")
-    monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
-    monkeypatch.setenv("MYZAP_HERMES_PROFILE", "pontoatendente")
+    monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+    assert check_requirements() is True
+
+
+def test_profile_guard_allows_configured_profile(monkeypatch):
+    monkeypatch.setenv("MYZAP_API_KEY", "x")
+    monkeypatch.setenv("HERMES_PROFILE", "suporte")
+    monkeypatch.setenv("MYZAP_HERMES_PROFILE", "suporte")
     assert check_requirements() is True
 
 
@@ -117,7 +123,7 @@ class SequenceClient(FakeClient):
 
 def test_poll_state_survives_restart_and_blocks_replay(monkeypatch, tmp_path):
     async def run():
-        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         state_path = tmp_path / "myzap-state.json"
         payload = {
             "mensagens": [
@@ -146,7 +152,7 @@ def test_poll_state_survives_restart_and_blocks_replay(monkeypatch, tmp_path):
 
 def test_poll_once_clears_rejected_cursor_and_retries(monkeypatch, tmp_path):
     async def run():
-        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         state_path = tmp_path / "myzap-state.json"
         state_path.write_text(json.dumps({"cursor": "1081", "since": "2026-05-31T12:00:00.000Z", "seen": []}), encoding="utf-8")
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key", "state_path": str(state_path)})
@@ -165,7 +171,7 @@ def test_poll_once_clears_rejected_cursor_and_retries(monkeypatch, tmp_path):
 
 def test_poll_once_dispatches_inbound_text(monkeypatch):
     async def run():
-        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
         a = MyZapAdapter(cfg)
         fake = FakeClient({
@@ -192,7 +198,7 @@ def test_poll_once_dispatches_inbound_text(monkeypatch):
 
 def test_poll_once_dispatches_widget_inbound_with_replyable_chat_id(monkeypatch):
     async def run():
-        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
         a = MyZapAdapter(cfg)
         fake = FakeClient({
@@ -218,7 +224,7 @@ def test_poll_once_dispatches_widget_inbound_with_replyable_chat_id(monkeypatch)
 
 def test_poll_once_allows_valid_widget_even_when_numbers_allowlisted(monkeypatch):
     async def run():
-        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key", "allowed_numbers": "5562999990000"})
         a = MyZapAdapter(cfg)
         fake = FakeClient({
@@ -242,7 +248,7 @@ def test_poll_once_allows_valid_widget_even_when_numbers_allowlisted(monkeypatch
 
 def test_poll_once_rejects_malformed_widget_destination(monkeypatch):
     async def run():
-        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
         a = MyZapAdapter(cfg)
         fake = FakeClient({
@@ -266,7 +272,7 @@ def test_poll_once_rejects_malformed_widget_destination(monkeypatch):
 
 def test_send_posts_widget_destination(monkeypatch):
     async def run():
-        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
         a = MyZapAdapter(cfg)
         fake = FakeClient({})
@@ -281,7 +287,7 @@ def test_send_posts_widget_destination(monkeypatch):
 
 def test_send_posts_text(monkeypatch):
     async def run():
-        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
         a = MyZapAdapter(cfg)
         fake = FakeClient({})
@@ -300,7 +306,7 @@ def test_public_operational_notice_detection():
 
 def test_send_suppresses_home_channel_notice_for_widget(monkeypatch):
     async def run():
-        monkeypatch.setenv("HERMES_PROFILE", "pontoatendente")
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
         a = MyZapAdapter(cfg)
         fake = FakeClient({})

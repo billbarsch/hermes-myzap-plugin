@@ -1,15 +1,15 @@
 """MyZap platform adapter for Hermes Agent.
 
-Text-only v0.1 adapter for Geranet Ponto's dedicated ``pontoatendente``
-profile.  It polls MyZap's incremental messages API and sends Hermes replies
-through ``POST /mensagens/texto``.  It intentionally does not handle media in
-v0.1; media messages are ignored with a debug log so the current WhatsApp/MyZap
-flow is preserved.
+Text-only v0.1 adapter for connecting any Hermes Agent profile to the MyZap
+WhatsApp API. It polls MyZap's incremental messages API and sends Hermes
+replies through ``POST /mensagens/texto``. It intentionally does not handle
+media in v0.1; media messages are ignored with a debug log so the current
+WhatsApp/MyZap flow is preserved.
 
 Directory plugin install shape:
 
-    ~/.hermes/profiles/pontoatendente/plugins/myzap/plugin.yaml
-    ~/.hermes/profiles/pontoatendente/plugins/myzap/__init__.py
+    ~/.hermes/profiles/<profile-name>/plugins/myzap/plugin.yaml
+    ~/.hermes/profiles/<profile-name>/plugins/myzap/__init__.py
 
 Pip install shape is also supported through the ``hermes_agent.plugins`` entry
 point declared in pyproject.toml.
@@ -117,7 +117,7 @@ MAX_MESSAGE_LENGTH = 4096
 DEDUP_WINDOW_SECONDS = 15 * 60
 DEDUP_MAX_SIZE = 5000
 RECONNECT_BACKOFF_SECONDS = (2, 5, 10, 30, 60)
-DEFAULT_REQUIRED_PROFILE = "pontoatendente"
+DEFAULT_REQUIRED_PROFILE = ""
 WIDGET_DESTINATION_RE = re.compile(r"^widget_[a-f0-9]{14}$")
 HOME_CHANNEL_NOTICE_PREFIX = "no home channel is set for myzap"
 DEFAULT_STATE_FILENAME = "myzap_poll_state.json"
@@ -141,7 +141,7 @@ def _required_profile() -> str:
 
 
 def _profile_allowed() -> bool:
-    """Fail closed for wrong named profiles, but allow tests/imports with no profile env."""
+    """Allow any profile unless MYZAP_HERMES_PROFILE explicitly restricts it."""
     current = _current_profile()
     required = _required_profile()
     return not current or not required or current == required
@@ -459,7 +459,7 @@ class MyZapAdapter(BasePlatformAdapter):
             logger.warning("[myzap] httpx not installed. Run: pip install httpx")
             return False
         if not _profile_allowed():
-            logger.warning("[myzap] disabled outside required profile %s", _required_profile())
+            logger.warning("[myzap] disabled outside configured profile %s", _required_profile())
             return False
         if not self._api_key:
             logger.warning("[myzap] MYZAP_API_KEY not configured")
@@ -711,7 +711,7 @@ def register(ctx) -> None:
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["MYZAP_BASE_URL", "MYZAP_API_KEY"],
-        install_hint="Install only in the pontoatendente profile and set MYZAP_API_KEY in that profile .env",
+        install_hint="Install in the Hermes profile that should use MyZap and set MYZAP_API_KEY in that profile .env",
         env_enablement_fn=_env_enablement,
         cron_deliver_env_var="MYZAP_HOME_NUMBER",
         standalone_sender_fn=_standalone_send,
@@ -722,8 +722,8 @@ def register(ctx) -> None:
         pii_safe=False,
         allow_update_command=False,
         platform_hint=(
-            "You are replying through MyZap/WhatsApp for Geranet Ponto. "
-            "Use short PT-BR plain-text answers. Do not expose credentials, "
-            "and escalate uncertain billing, support, or system-change requests."
+            "You are replying through MyZap/WhatsApp. Use concise plain-text "
+            "answers, do not expose credentials, and escalate uncertain billing, "
+            "support, or system-change requests."
         ),
     )
