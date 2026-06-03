@@ -106,8 +106,8 @@ class FakeClient:
         self.get_calls.append((url, dict(params or {}), headers))
         return FakeResponse(payload=self.payload)
 
-    async def post(self, url, json=None, headers=None):
-        self.posts.append((url, json, headers))
+    async def post(self, url, json=None, data=None, files=None, headers=None):
+        self.posts.append({"url": url, "json": json, "data": data, "files": files, "headers": headers})
         return FakeResponse(status_code=201, payload={"messageId": "sent-1"})
 
 
@@ -279,8 +279,8 @@ def test_send_posts_widget_destination(monkeypatch):
         a._http_client = fake
         result = await a.send("widget_abc123def45678", "Resposta widget")
         assert result.success is True
-        assert fake.posts[0][0] == "https://example.test/api/v1/mensagens/texto"
-        assert fake.posts[0][1] == {"numero": "widget_abc123def45678", "texto": "Resposta widget"}
+        assert fake.posts[0]["url"] == "https://example.test/api/v1/mensagens/texto"
+        assert fake.posts[0]["json"] == {"numero": "widget_abc123def45678", "texto": "Resposta widget"}
 
     asyncio.run(run())
 
@@ -294,8 +294,28 @@ def test_send_posts_text(monkeypatch):
         a._http_client = fake
         result = await a.send("+55 62 99999-0000", "Resposta")
         assert result.success is True
-        assert fake.posts[0][0] == "https://example.test/api/v1/mensagens/texto"
-        assert fake.posts[0][1] == {"numero": "5562999990000", "texto": "Resposta"}
+        assert fake.posts[0]["url"] == "https://example.test/api/v1/mensagens/texto"
+        assert fake.posts[0]["json"] == {"numero": "5562999990000", "texto": "Resposta"}
+
+    asyncio.run(run())
+
+def test_send_document_posts_media(monkeypatch, tmp_path):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({})
+        a._http_client = fake
+        arquivo = tmp_path / "boleto.pdf"
+        arquivo.write_bytes(b"%PDF-1.4\nTESTE")
+
+        result = await a.send_document("+55 62 99999-0000", str(arquivo), caption="Boleto atualizado")
+        assert result.success is True
+        assert fake.posts[0]["url"] == "https://example.test/api/v1/mensagens/midia"
+        assert fake.posts[0]["data"] == {"numero": "5562999990000", "legenda": "Boleto atualizado"}
+        assert fake.posts[0]["files"]["arquivo"][0] == "boleto.pdf"
+        assert fake.posts[0]["files"]["arquivo"][1] == b"%PDF-1.4\nTESTE"
+        assert fake.posts[0]["files"]["arquivo"][2] == "application/pdf"
 
     asyncio.run(run())
 

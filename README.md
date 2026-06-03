@@ -156,7 +156,7 @@ Resumo:
 
 ## Limites v0.1
 
-- Sem download/envio de mídia pelo fluxo do agente.
+- Envio de mídia disponível pelo fluxo do agente via `send_document`/`send_image_file`/`send_voice`/`send_video`, usando `POST /mensagens/midia`.
 - Sem rota HTTP própria de webhook. O arquivo `adapter.py` inclui `verify_webhook_signature(...)` para um shim futuro validar HMAC antes de repassar eventos.
 - Polling usa a rota incremental do MyZap; se a API mudar o contrato de payload, ajuste os helpers `extract_messages(...)` e os campos de mensagem.
 

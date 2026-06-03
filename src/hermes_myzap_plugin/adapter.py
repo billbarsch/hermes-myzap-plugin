@@ -1,10 +1,10 @@
 """MyZap platform adapter for Hermes Agent.
 
-Text-only v0.1 adapter for connecting any Hermes Agent profile to the MyZap
-WhatsApp API. It polls MyZap's incremental messages API and sends Hermes
-replies through ``POST /mensagens/texto``. It intentionally does not handle
-media in v0.1; media messages are ignored with a debug log so the current
-WhatsApp/MyZap flow is preserved.
+Adapter for connecting any Hermes Agent profile to the MyZap WhatsApp API.
+It polls MyZap's incremental messages API, sends Hermes replies through
+``POST /mensagens/texto`` and can also upload attachments through
+``POST /mensagens/midia`` for document/image/video/voice flows when the
+gateway emits media files.
 
 Directory plugin install shape:
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import mimetypes
 import json
 import logging
 import os
@@ -391,6 +392,53 @@ def is_connected(config: PlatformConfig) -> bool:
     return validate_config(config)
 
 
+async def _enviar_midia_http(
+    http_client,
+    *,
+    base_url: str,
+    api_key: str,
+    destination: str,
+    file_path: str,
+    caption: str = "",
+    file_name: Optional[str] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    arquivo = Path(file_path)
+    if not arquivo.exists() or not arquivo.is_file():
+        raise FileNotFoundError(f"Arquivo de mídia não encontrado: {file_path}")
+
+    nome_upload = file_name or arquivo.name
+    mime_type = mimetypes.guess_type(nome_upload)[0] or mimetypes.guess_type(arquivo.name)[0] or "application/octet-stream"
+    payload = {"numero": destination, "legenda": caption or ""}
+    if force_document:
+        payload["tipo"] = "documento"
+
+    resp = await http_client.post(
+        f"{base_url}/mensagens/midia",
+        data=payload,
+        files={"arquivo": (nome_upload, arquivo.read_bytes(), mime_type)},
+        headers=_headers(api_key),
+    )
+    if resp.status_code >= 300:
+        return {
+            "success": False,
+            "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
+            "raw_response": resp.text,
+        }
+
+    try:
+        data = resp.json()
+    except Exception:
+        data = {"raw": resp.text}
+
+    msg_id = str(data.get("messageId") or (data.get("mensagem") or {}).get("id") or data.get("id") or "") or None
+    return {
+        "success": True,
+        "message_id": msg_id,
+        "raw_response": {"status_code": resp.status_code, "dados": data},
+    }
+
+
 class MyZapAdapter(BasePlatformAdapter):
     """Hermes gateway adapter backed by MyZap's REST API."""
 
@@ -638,9 +686,83 @@ class MyZapAdapter(BasePlatformAdapter):
             data = resp.json()
             msg_id = str(data.get("messageId") or (data.get("mensagem") or {}).get("id") or data.get("id") or "") or None
             return SendResult(success=True, message_id=msg_id, raw_response={"status_code": resp.status_code})
+
         except Exception as exc:
             logger.error("[myzap] send error: %s", exc)
             return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        if self._http_client is None:
+            return SendResult(success=False, error="HTTP client not initialized")
+        destination_raw = str((metadata or {}).get("numero") or chat_id or "").strip()
+        if is_widget_destination(destination_raw):
+            destination = destination_raw
+        elif destination_raw.startswith("widget_"):
+            return SendResult(success=False, error="invalid MyZap widget destination")
+        else:
+            destination = normalize_number(destination_raw)
+        if not destination:
+            return SendResult(success=False, error="missing MyZap destination")
+
+        try:
+            resultado = await _enviar_midia_http(
+                self._http_client,
+                base_url=self._base_url,
+                api_key=self._api_key,
+                destination=destination,
+                file_path=file_path,
+                caption=caption or "",
+                file_name=file_name,
+                force_document=bool(kwargs.get("force_document")),
+            )
+            if not resultado.get("success"):
+                return SendResult(success=False, error=resultado.get("error", "Erro ao enviar mídia"), raw_response=resultado.get("raw_response"))
+            return SendResult(success=True, message_id=resultado.get("message_id"), raw_response=resultado.get("raw_response"))
+        except Exception as exc:
+            logger.error("[myzap] send_document error: %s", exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self.send_document(chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs)
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self.send_document(chat_id, audio_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self.send_document(chat_id, video_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         return None
@@ -670,20 +792,40 @@ async def _standalone_send(
     base_url = _base_url_from(extra)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
+            if media_files:
+                resultado_final: Dict[str, Any] = {"success": True, "platform": "myzap", "chat_id": number, "media_sent": []}
+                for index, item in enumerate(media_files):
+                    media_path, _is_voice = item if isinstance(item, (list, tuple)) and len(item) >= 2 else (item, False)
+                    postagem = await _enviar_midia_http(
+                        client,
+                        base_url=base_url,
+                        api_key=api_key,
+                        destination=number,
+                        file_path=str(media_path),
+                        caption=message[:MAX_MESSAGE_LENGTH] if index == 0 else "",
+                        force_document=bool(force_document),
+                    )
+                    if not postagem.get("success"):
+                        return {"error": postagem.get("error", "myzap media send failed"), "raw_response": postagem.get("raw_response")}
+                    resultado_final["media_sent"].append(postagem)
+                    if not resultado_final.get("message_id"):
+                        resultado_final["message_id"] = postagem.get("message_id")
+                return resultado_final
+
             resp = await client.post(
                 f"{base_url}/mensagens/texto",
                 json={"numero": number, "texto": message[:MAX_MESSAGE_LENGTH]},
                 headers=_headers(api_key),
             )
-        if resp.status_code >= 300:
-            return {"error": f"myzap HTTP {resp.status_code}: {resp.text[:200]}"}
-        data = resp.json()
-        return {
-            "success": True,
-            "platform": "myzap",
-            "chat_id": number,
-            "message_id": str(data.get("messageId") or (data.get("mensagem") or {}).get("id") or data.get("id") or ""),
-        }
+            if resp.status_code >= 300:
+                return {"error": f"myzap HTTP {resp.status_code}: {resp.text[:200]}"}
+            data = resp.json()
+            return {
+                "success": True,
+                "platform": "myzap",
+                "chat_id": number,
+                "message_id": str(data.get("messageId") or (data.get("mensagem") or {}).get("id") or data.get("id") or ""),
+            }
     except Exception as exc:
         return {"error": f"myzap standalone send failed: {exc}"}
 
