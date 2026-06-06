@@ -4,16 +4,18 @@ Plugin de plataforma para conectar agentes do Hermes Agent ao MyZap, permitindo 
 
 Ele funciona como um conector de plataforma, no mesmo papel de conectores como Telegram, WhatsApp, Discord ou outros canais de atendimento: você instala no perfil Hermes desejado, configura a chave da API do MyZap e habilita a plataforma `myzap`.
 
-Status: v0.1 text-only, instalável/testável localmente, sem credenciais no repositório.
+Status: v0.2, instalável/testável localmente, sem credenciais no repositório.
 
 ## O que faz
 
 - Registra a plataforma `myzap` via `ctx.register_platform(...)`.
 - Recebe mensagens por polling incremental em `GET {MYZAP_BASE_URL}/mensagens`.
 - Envia respostas por `POST {MYZAP_BASE_URL}/mensagens/texto`.
+- Recebe anexos do MyZap e repassa URLs/tipos de mídia ao Hermes quando disponíveis.
+- Transcreve áudios recebidos quando `MYZAP_STT_API_KEY` ou `OPENAI_API_KEY` estiver configurada.
+- Envia documentos, imagens, vídeos e áudios por `POST {MYZAP_BASE_URL}/mensagens/midia`.
 - Deduplica mensagens por `messageId`/`id` e persiste cursor/estado para evitar replay após restart.
 - Preserva destinos de widget público no formato `widget_<hash>`.
-- Ignora mídia no v0.1; mensagens sem texto não são baixadas nem anexadas automaticamente.
 - Usa allowlist do Hermes (`MYZAP_ALLOWED_USERS`/`MYZAP_ALLOW_ALL_USERS`) e allowlist opcional do adapter (`MYZAP_ALLOWED_NUMBERS`).
 - Pode ser restringido a um perfil Hermes específico com `MYZAP_HERMES_PROFILE`, mas por padrão aceita qualquer perfil em que for instalado/configurado.
 
@@ -42,6 +44,7 @@ MYZAP_ALLOWED_USERS=5562999999999
 MYZAP_HOME_NUMBER=5562999999999
 MYZAP_POLL_INTERVAL_SECONDS=10
 MYZAP_POLL_LOOKBACK_SECONDS=120
+MYZAP_STT_API_KEY=coloque_sua_chave_de_transcricao_aqui
 ```
 
 O adapter também aceita:
@@ -52,6 +55,10 @@ O adapter também aceita:
 - `MYZAP_ALLOW_ALL_NUMBERS=true`: desliga o filtro local do adapter.
 - `MYZAP_CURSOR`: cursor inicial opcional.
 - `MYZAP_STATE_PATH`: caminho opcional para o arquivo de estado do polling.
+- `MYZAP_STT_API_KEY`: chave opcional para transcrever áudio recebido. Se não for definida, o plugin tenta usar `OPENAI_API_KEY`.
+- `MYZAP_STT_BASE_URL`: base OpenAI-compatible para transcrição. Padrão: `https://api.openai.com/v1`.
+- `MYZAP_STT_MODEL`: modelo de transcrição. Padrão: `whisper-1`.
+- `MYZAP_STT_MAX_BYTES`: limite máximo do áudio baixado para transcrição. Padrão: `26214400`.
 
 ## Instalação para desenvolvimento
 
@@ -152,11 +159,19 @@ Resumo:
 
 - `GET /mensagens` deve retornar mensagens em ordem incremental.
 - `POST /mensagens/texto` deve aceitar `{ "numero": "...", "texto": "..." }`.
+- `POST /mensagens/midia` deve aceitar multipart/form-data com campo único `arquivo`.
+- Anexos recebidos podem vir em `arquivos`, `arquivosMensagem`, `attachments` ou `media`.
 - A autenticação usa o header `X-API-Key`.
 
-## Limites v0.1
+## Mídia e Áudio
 
 - Envio de mídia disponível pelo fluxo do agente via `send_document`/`send_image_file`/`send_voice`/`send_video`, usando `POST /mensagens/midia`.
+- Recebimento de mídia preenche `MessageEvent.media_urls` e `MessageEvent.media_types` quando o MyZap fornece URL do anexo.
+- Áudios recebidos são baixados e enviados para `/audio/transcriptions` quando houver chave de STT configurada.
+- Se a transcrição falhar ou não estiver configurada, o plugin mantém o resumo textual do anexo para o agente não perder o evento.
+
+## Limites atuais
+
 - Sem rota HTTP própria de webhook. O arquivo `adapter.py` inclui `verify_webhook_signature(...)` para um shim futuro validar HMAC antes de repassar eventos.
 - Polling usa a rota incremental do MyZap; se a API mudar o contrato de payload, ajuste os helpers `extract_messages(...)` e os campos de mensagem.
 

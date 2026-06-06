@@ -31,6 +31,11 @@ Campos aceitos por mensagem:
 Quando a mensagem vier sem texto, o adapter monta um resumo legível a partir
 dos anexos para que o evento continue sendo processado pelo Hermes.
 
+Quando a mensagem vier com anexos que tenham URL, o adapter repassa esses
+endereços em `MessageEvent.media_urls` e os tipos em `MessageEvent.media_types`.
+Anexos de áudio são transcritos quando houver chave de STT configurada no
+perfil Hermes.
+
 ## Envio de texto
 
 `POST /mensagens/texto`

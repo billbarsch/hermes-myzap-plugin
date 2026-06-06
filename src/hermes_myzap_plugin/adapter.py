@@ -33,6 +33,7 @@ from collections import Counter, OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlparse
 
 try:  # Hermes already depends on httpx; keep an explicit guard for plugin checks.
     import httpx
@@ -82,6 +83,8 @@ except ModuleNotFoundError:  # pragma: no cover - lightweight stubs for standalo
         source: Any = None
         raw_message: Any = None
         message_id: Optional[str] = None
+        media_urls: List[str] = field(default_factory=list)
+        media_types: List[str] = field(default_factory=list)
         timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @dataclass
@@ -125,6 +128,9 @@ DEFAULT_REQUIRED_PROFILE = ""
 WIDGET_DESTINATION_RE = re.compile(r"^widget_[a-f0-9]{14}$")
 HOME_CHANNEL_NOTICE_PREFIX = "no home channel is set for myzap"
 DEFAULT_STATE_FILENAME = "myzap_poll_state.json"
+DEFAULT_STT_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_STT_MODEL = "whisper-1"
+DEFAULT_STT_MAX_BYTES = 25 * 1024 * 1024
 
 
 
@@ -161,6 +167,30 @@ def _api_key_from(extra: Dict[str, Any] | None = None) -> str:
     return str(extra.get("api_key") or _env("MYZAP_API_KEY") or "").strip()
 
 
+def _stt_api_key_from(extra: Dict[str, Any] | None = None) -> str:
+    extra = extra or {}
+    return str(extra.get("stt_api_key") or _env("MYZAP_STT_API_KEY") or _env("OPENAI_API_KEY") or "").strip()
+
+
+def _stt_base_url_from(extra: Dict[str, Any] | None = None) -> str:
+    extra = extra or {}
+    return str(extra.get("stt_base_url") or _env("MYZAP_STT_BASE_URL", DEFAULT_STT_BASE_URL)).rstrip("/")
+
+
+def _stt_model_from(extra: Dict[str, Any] | None = None) -> str:
+    extra = extra or {}
+    return str(extra.get("stt_model") or _env("MYZAP_STT_MODEL", DEFAULT_STT_MODEL)).strip() or DEFAULT_STT_MODEL
+
+
+def _stt_max_bytes_from(extra: Dict[str, Any] | None = None) -> int:
+    extra = extra or {}
+    raw = str(extra.get("stt_max_bytes") or _env("MYZAP_STT_MAX_BYTES", str(DEFAULT_STT_MAX_BYTES))).strip()
+    try:
+        return max(1024, int(raw))
+    except ValueError:
+        return DEFAULT_STT_MAX_BYTES
+
+
 def _state_path_from(extra: Dict[str, Any] | None = None) -> Path:
     extra = extra or {}
     explicit = str(extra.get("state_path") or _env("MYZAP_STATE_PATH") or "").strip()
@@ -174,7 +204,7 @@ def _headers(api_key: str) -> Dict[str, str]:
     return {
         "X-API-Key": api_key,
         "Accept": "application/json",
-        "User-Agent": "Hermes-MyZap-Plugin/0.1",
+        "User-Agent": "Hermes-MyZap-Plugin/0.2",
     }
 
 
@@ -270,6 +300,23 @@ def message_attachments(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     return normalized
 
 
+def attachment_url(attachment: Dict[str, Any]) -> str:
+    return str(attachment.get("url") or attachment.get("link") or attachment.get("downloadUrl") or "").strip()
+
+
+def attachment_mime_type(attachment: Dict[str, Any]) -> str:
+    return str(attachment.get("mimeType") or attachment.get("mime_type") or attachment.get("mimetype") or "").strip()
+
+
+def attachment_name(attachment: Dict[str, Any]) -> str:
+    return str(attachment.get("nome") or attachment.get("fileName") or attachment.get("filename") or "arquivo").strip() or "arquivo"
+
+
+def safe_download_url(url: str) -> bool:
+    parsed = urlparse(str(url or "").strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 def attachment_kind(attachment: Dict[str, Any]) -> str:
     tipo = str(attachment.get("tipo") or "").strip().lower()
     mime = str(attachment.get("mimeType") or attachment.get("mime_type") or "").strip().lower()
@@ -343,6 +390,25 @@ def message_text(message: Dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return message_media_summary(message)
+
+
+def is_media_summary_text(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return bool(normalized) and any(
+        normalized.startswith(prefix)
+        for prefix in (
+            "🎤 áudio enviado",
+            "áudio enviado",
+            "audio enviado",
+            "🖼️ imagem enviada",
+            "imagem enviada",
+            "🎬 vídeo enviado",
+            "vídeo enviado",
+            "video enviado",
+            "📎 arquivo enviado",
+            "arquivo enviado",
+        )
+    )
 
 
 def _message_type_for_kind(kind: str):
@@ -566,6 +632,10 @@ class MyZapAdapter(BasePlatformAdapter):
         self._seen: "OrderedDict[str, float]" = OrderedDict()
         self._allowed_numbers = _parse_allowed(str(extra.get("allowed_numbers") or _env("MYZAP_ALLOWED_NUMBERS")))
         self._allow_all = bool(extra.get("allow_all_numbers")) or _truthy(_env("MYZAP_ALLOW_ALL_NUMBERS"))
+        self._stt_api_key = _stt_api_key_from(extra)
+        self._stt_base_url = _stt_base_url_from(extra)
+        self._stt_model = _stt_model_from(extra)
+        self._stt_max_bytes = _stt_max_bytes_from(extra)
         self._load_state()
 
     def _load_state(self) -> None:
@@ -706,6 +776,85 @@ class MyZapAdapter(BasePlatformAdapter):
         self._persist_state()
         return dispatched
 
+    async def _prepare_inbound_message(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        text = message_text(msg)
+        attachments = message_attachments(msg)
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        audio_transcripts: List[str] = []
+
+        for attachment in attachments:
+            url = attachment_url(attachment)
+            mime_type = attachment_mime_type(attachment)
+            if url:
+                media_urls.append(url)
+                media_types.append(mime_type or attachment_kind(attachment))
+            if attachment_kind(attachment) == "audio":
+                transcript = await self._transcribe_audio_attachment(attachment)
+                if transcript:
+                    audio_transcripts.append(transcript)
+
+        if audio_transcripts:
+            transcript_text = "\n".join(f"🎤 Áudio transcrito: {item}" for item in audio_transcripts)
+            if not text or is_media_summary_text(text):
+                text = transcript_text
+            else:
+                text = f"{text}\n\n{transcript_text}"
+
+        return {
+            "text": text,
+            "media_urls": media_urls,
+            "media_types": media_types,
+        }
+
+    async def _transcribe_audio_attachment(self, attachment: Dict[str, Any]) -> str:
+        if not self._stt_api_key:
+            logger.debug("[myzap] audio received but STT key is not configured")
+            return ""
+        if self._http_client is None:
+            return ""
+
+        url = attachment_url(attachment)
+        if not url or not safe_download_url(url):
+            logger.warning("[myzap] skipping audio transcription for unsafe or empty URL")
+            return ""
+
+        nome = attachment_name(attachment)
+        mime_type = attachment_mime_type(attachment) or mimetypes.guess_type(nome)[0] or "application/octet-stream"
+        try:
+            response = await self._http_client.get(url, follow_redirects=True, timeout=30.0)
+            response.raise_for_status()
+            audio_bytes = response.content
+            if len(audio_bytes) < 10:
+                logger.warning("[myzap] audio transcription skipped: downloaded file too small")
+                return ""
+            if len(audio_bytes) > self._stt_max_bytes:
+                logger.warning("[myzap] audio transcription skipped: file has %d bytes, limit is %d", len(audio_bytes), self._stt_max_bytes)
+                return ""
+
+            stt_response = await self._http_client.post(
+                f"{self._stt_base_url}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {self._stt_api_key}"},
+                data={"model": self._stt_model},
+                files={"file": (nome, audio_bytes, mime_type)},
+                timeout=60.0,
+            )
+            stt_response.raise_for_status()
+            result = stt_response.json()
+            text = str(result.get("text") or "").strip()
+            if text:
+                return text
+            choices = result.get("choices") if isinstance(result, dict) else None
+            if isinstance(choices, list) and choices:
+                content = str((choices[0].get("message") or {}).get("content") or "").strip()
+                if content:
+                    return content
+            logger.warning("[myzap] audio transcription returned empty text")
+            return ""
+        except Exception as exc:
+            logger.warning("[myzap] audio transcription failed: %s", exc)
+            return ""
+
     async def _dispatch_if_relevant(self, msg: Dict[str, Any]) -> bool:
         msg_id = message_identity(msg)
         if self._is_duplicate(msg_id):
@@ -713,7 +862,8 @@ class MyZapAdapter(BasePlatformAdapter):
         if not is_inbound(msg):
             logger.debug("[myzap] skipping outbound/echo message %s", msg_id)
             return False
-        text = message_text(msg)
+        prepared_message = await self._prepare_inbound_message(msg)
+        text = prepared_message["text"]
         if not text:
             logger.debug("[myzap] skipping empty message %s", msg_id)
             return False
@@ -736,6 +886,8 @@ class MyZapAdapter(BasePlatformAdapter):
             source=source,
             raw_message=msg,
             message_id=msg_id,
+            media_urls=prepared_message["media_urls"],
+            media_types=prepared_message["media_types"],
             timestamp=message_created_at(msg),
         )
         await self.handle_message(event)

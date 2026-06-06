@@ -102,10 +102,12 @@ def test_verify_webhook_signature():
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, payload=None, text=""):
+    def __init__(self, status_code=200, payload=None, text="", content=b""):
         self.status_code = status_code
         self._payload = payload or {}
         self.text = text or json.dumps(self._payload)
+        self.content = content or self.text.encode("utf-8")
+        self.headers = {}
 
     def json(self):
         return self._payload
@@ -121,12 +123,12 @@ class FakeClient:
         self.get_calls = []
         self.posts = []
 
-    async def get(self, url, params=None, headers=None):
-        self.get_calls.append((url, dict(params or {}), headers))
+    async def get(self, url, params=None, headers=None, **kwargs):
+        self.get_calls.append((url, dict(params or {}), headers, kwargs))
         return FakeResponse(payload=self.payload)
 
-    async def post(self, url, json=None, data=None, files=None, headers=None):
-        self.posts.append({"url": url, "json": json, "data": data, "files": files, "headers": headers})
+    async def post(self, url, json=None, data=None, files=None, headers=None, **kwargs):
+        self.posts.append({"url": url, "json": json, "data": data, "files": files, "headers": headers, "kwargs": kwargs})
         return FakeResponse(status_code=201, payload={"messageId": "sent-1"})
 
 
@@ -135,9 +137,23 @@ class SequenceClient(FakeClient):
         super().__init__({})
         self.responses = list(responses)
 
-    async def get(self, url, params=None, headers=None):
-        self.get_calls.append((url, dict(params or {}), headers))
+    async def get(self, url, params=None, headers=None, **kwargs):
+        self.get_calls.append((url, dict(params or {}), headers, kwargs))
         return self.responses.pop(0)
+
+
+class MediaClient(FakeClient):
+    async def get(self, url, params=None, headers=None, **kwargs):
+        self.get_calls.append((url, dict(params or {}), headers, kwargs))
+        if url == "https://storage/audio.webm":
+            return FakeResponse(content=b"webm-audio-bytes")
+        return FakeResponse(payload=self.payload)
+
+    async def post(self, url, json=None, data=None, files=None, headers=None, **kwargs):
+        self.posts.append({"url": url, "json": json, "data": data, "files": files, "headers": headers, "kwargs": kwargs})
+        if url.endswith("/audio/transcriptions"):
+            return FakeResponse(status_code=200, payload={"text": "Preciso saber os planos do sistema."})
+        return FakeResponse(status_code=201, payload={"messageId": "sent-1"})
 
 
 def test_poll_state_survives_restart_and_blocks_replay(monkeypatch, tmp_path):
@@ -253,6 +269,98 @@ def test_poll_once_dispatches_inbound_audio_without_text(monkeypatch):
         assert "áudio" in events[0].text.lower()
         assert events[0].source.chat_id == "widget_abc123def45678"
         assert events[0].raw_message["arquivos"][0]["mimeType"] == "audio/mpeg"
+
+    asyncio.run(run())
+
+
+def test_poll_once_transcribes_inbound_audio(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(enabled=True, extra={
+            "base_url": "https://example.test/api/v1",
+            "api_key": "key",
+            "stt_api_key": "stt-key",
+            "stt_base_url": "https://stt.example/v1",
+        })
+        a = MyZapAdapter(cfg)
+        fake = MediaClient({
+            "mensagens": [
+                {
+                    "id": 13,
+                    "direcao": "RECEBIDA",
+                    "conteudo": "🎤 Áudio enviado: audio-123.webm",
+                    "remoteJid": "widget_abc123def45678",
+                    "conversaId": 8,
+                    "criadoEm": "2026-05-31T12:00:00.000Z",
+                    "arquivos": [
+                        {
+                            "id": 502,
+                            "nome": "audio-123.webm",
+                            "tipo": "audio",
+                            "mimeType": "audio/webm",
+                            "url": "https://storage/audio.webm"
+                        }
+                    ]
+                }
+            ]
+        })
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 1
+        assert events[0].text == "🎤 Áudio transcrito: Preciso saber os planos do sistema."
+        assert events[0].media_urls == ["https://storage/audio.webm"]
+        assert events[0].media_types == ["audio/webm"]
+        assert fake.posts[0]["url"] == "https://stt.example/v1/audio/transcriptions"
+        assert fake.posts[0]["files"]["file"][0] == "audio-123.webm"
+        assert fake.posts[0]["files"]["file"][2] == "audio/webm"
+
+    asyncio.run(run())
+
+
+def test_poll_once_dispatches_inbound_image_media(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({
+            "mensagens": [
+                {
+                    "id": 14,
+                    "direcao": "RECEBIDA",
+                    "conteudo": "Comprovante",
+                    "remoteJid": "widget_abc123def45678",
+                    "conversaId": 8,
+                    "criadoEm": "2026-05-31T12:00:00.000Z",
+                    "arquivos": [
+                        {
+                            "id": 503,
+                            "nome": "foto.jpg",
+                            "tipo": "imagem",
+                            "mimeType": "image/jpeg",
+                            "url": "https://storage/foto.jpg"
+                        }
+                    ]
+                }
+            ]
+        })
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 1
+        assert events[0].text == "Comprovante"
+        assert events[0].media_urls == ["https://storage/foto.jpg"]
+        assert events[0].media_types == ["image/jpeg"]
 
     asyncio.run(run())
 
