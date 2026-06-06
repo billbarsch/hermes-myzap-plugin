@@ -25,6 +25,11 @@ Campos aceitos por mensagem:
 - número: `numero`, `telefone`, `remoteJid`, `chatId`, `contato.numero` ou `conversa.numero`.
 - conversa: `conversaId`, `conversa_id`, `chatId` ou `remoteJid`.
 - data: `criadoEm`, `createdAt`, `timestamp`, `dataHora` ou `data`.
+- anexos: `arquivos`, `arquivosMensagem`, `attachments` ou `media`.
+- anexo individual: `nome`, `fileName`, `filename`, `tipo`, `type`, `mimeType`, `mime_type`, `url`, `link` ou `downloadUrl`.
+
+Quando a mensagem vier sem texto, o adapter monta um resumo legível a partir
+dos anexos para que o evento continue sendo processado pelo Hermes.
 
 ## Envio de texto
 
@@ -38,6 +43,10 @@ JSON:
   "texto": "Mensagem em texto puro"
 }
 ```
+
+Também é aceito multipart/form-data com campo repetido `arquivos` para envio de
+documentos, imagens, vídeos, áudios e figurinhas. O texto pode ser omitido
+quando houver anexos.
 
 Header:
 

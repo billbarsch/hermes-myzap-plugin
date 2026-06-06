@@ -13,6 +13,8 @@ from hermes_myzap_plugin.adapter import (
     is_public_operational_notice,
     is_widget_destination,
     message_destination,
+    message_attachments,
+    message_text,
     normalize_number,
     verify_webhook_signature,
 )
@@ -71,6 +73,23 @@ def test_iso_utc_milliseconds():
 
 def test_extract_messages_nested():
     assert extract_messages({"data": {"mensagens": [{"id": 1}]}}) == [{"id": 1}]
+
+
+def test_message_text_gera_resumo_para_anexo_sem_texto():
+    mensagem = {
+        "id": 2,
+        "direcao": "RECEBIDA",
+        "conteudo": "",
+        "arquivos": [
+            {
+                "nome": "audio.webm",
+                "tipo": "audio",
+                "mimeType": "audio/webm"
+            }
+        ]
+    }
+    assert "áudio" in message_text(mensagem).lower()
+    assert message_attachments(mensagem)[0]["mimeType"] == "audio/webm"
 
 
 def test_verify_webhook_signature():
@@ -192,6 +211,48 @@ def test_poll_once_dispatches_inbound_text(monkeypatch):
         assert events[0].text == "Oi"
         assert events[0].source.chat_id == "7"
         assert events[0].source.user_id == "5562999990000"
+
+    asyncio.run(run())
+
+
+def test_poll_once_dispatches_inbound_audio_without_text(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({
+            "mensagens": [
+                {
+                    "id": 12,
+                    "direcao": "RECEBIDA",
+                    "conteudo": "",
+                    "remoteJid": "widget_abc123def45678",
+                    "conversaId": 8,
+                    "criadoEm": "2026-05-31T12:00:00.000Z",
+                    "arquivos": [
+                        {
+                            "id": 501,
+                            "nome": "nota.mp3",
+                            "tipo": "audio",
+                            "mimeType": "audio/mpeg",
+                            "url": "https://storage/nota.mp3"
+                        }
+                    ]
+                }
+            ]
+        })
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 1
+        assert "áudio" in events[0].text.lower()
+        assert events[0].source.chat_id == "widget_abc123def45678"
+        assert events[0].raw_message["arquivos"][0]["mimeType"] == "audio/mpeg"
 
     asyncio.run(run())
 

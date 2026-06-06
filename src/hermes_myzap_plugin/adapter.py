@@ -4,7 +4,10 @@ Adapter for connecting any Hermes Agent profile to the MyZap WhatsApp API.
 It polls MyZap's incremental messages API, sends Hermes replies through
 ``POST /mensagens/texto`` and can also upload attachments through
 ``POST /mensagens/midia`` for document/image/video/voice flows when the
-gateway emits media files.
+gateway emits media files. Inbound media messages are accepted as first-class
+events: the adapter keeps the raw attachment metadata, generates a readable
+summary when MyZap does not provide text, and only falls back to text events
+when the Hermes runtime does not expose a dedicated media message type.
 
 Directory plugin install shape:
 
@@ -26,7 +29,7 @@ import logging
 import os
 import re
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -235,6 +238,96 @@ def extract_messages(payload: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def message_attachments(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    attachments: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for key in ("arquivos", "arquivosMensagem", "attachments", "media"):
+        value = message.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    signature = "|".join(
+                        str(item.get(campo) or "").strip()
+                        for campo in ("id", "nome", "fileName", "url", "downloadUrl")
+                    )
+                    if signature in seen:
+                        continue
+                    seen.add(signature)
+                    attachments.append(item)
+    normalized: List[Dict[str, Any]] = []
+    for item in attachments:
+        nome = str(item.get("nome") or item.get("fileName") or item.get("filename") or "arquivo").strip() or "arquivo"
+        mime_type = str(item.get("mimeType") or item.get("mime_type") or item.get("mimetype") or "").strip()
+        tipo = str(item.get("tipo") or item.get("type") or "").strip().lower()
+        url = str(item.get("url") or item.get("link") or item.get("downloadUrl") or "").strip()
+        normalized.append({
+            **item,
+            "nome": nome,
+            "mimeType": mime_type,
+            "tipo": tipo,
+            "url": url,
+        })
+    return normalized
+
+
+def attachment_kind(attachment: Dict[str, Any]) -> str:
+    tipo = str(attachment.get("tipo") or "").strip().lower()
+    mime = str(attachment.get("mimeType") or attachment.get("mime_type") or "").strip().lower()
+    nome = str(attachment.get("nome") or "").strip().lower()
+
+    if tipo in {"imagem", "image"} or mime.startswith("image/"):
+        if mime == "image/webp" or nome.endswith(".webp"):
+            return "sticker"
+        return "image"
+    if tipo in {"video"} or mime.startswith("video/"):
+        return "video"
+    if tipo in {"audio", "voice"} or mime.startswith("audio/") or mime == "application/ogg":
+        return "audio"
+    if tipo in {"figurinha", "sticker"} or nome.endswith(".webp"):
+        return "sticker"
+    return "document"
+
+
+def message_media_summary(message: Dict[str, Any]) -> str:
+    attachments = message_attachments(message)
+    if not attachments:
+        return ""
+
+    if len(attachments) == 1:
+        attachment = attachments[0]
+        kind = attachment_kind(attachment)
+        nome = str(attachment.get("nome") or "").strip()
+        if kind == "image":
+            return f"🖼️ Imagem enviada{f': {nome}' if nome else ''}"
+        if kind == "video":
+            return f"🎬 Vídeo enviado{f': {nome}' if nome else ''}"
+        if kind == "audio":
+            return f"🎤 Áudio enviado{f': {nome}' if nome else ''}"
+        if kind == "sticker":
+            return f"✨ Figurinha enviada{f': {nome}' if nome else ''}"
+        return f"📎 Arquivo enviado{f': {nome}' if nome else ''}"
+
+    kinds = Counter(attachment_kind(attachment) for attachment in attachments)
+    if len(kinds) == 1:
+        kind = next(iter(kinds))
+        if kind == "image":
+            return f"🖼️ {len(attachments)} imagens anexadas"
+        if kind == "video":
+            return f"🎬 {len(attachments)} vídeos anexados"
+        if kind == "audio":
+            return f"🎤 {len(attachments)} áudios anexados"
+        if kind == "sticker":
+            return f"✨ {len(attachments)} figurinhas anexadas"
+    return f"📎 {len(attachments)} arquivos anexados"
+
+
+def message_primary_kind(message: Dict[str, Any]) -> str:
+    attachments = message_attachments(message)
+    if not attachments:
+        return ""
+    return attachment_kind(attachments[0])
+
+
 def message_identity(message: Dict[str, Any]) -> str:
     for key in ("messageId", "message_id", "id", "idMensagem"):
         value = message.get(key)
@@ -249,7 +342,22 @@ def message_text(message: Dict[str, Any]) -> str:
         value = message.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    return ""
+    return message_media_summary(message)
+
+
+def _message_type_for_kind(kind: str):
+    desired = {
+        "audio": ("AUDIO", "VOICE"),
+        "image": ("IMAGE", "PHOTO"),
+        "video": ("VIDEO",),
+        "sticker": ("STICKER",),
+        "document": ("DOCUMENT", "FILE"),
+    }.get(kind, ())
+    for candidate in desired:
+        member = getattr(MessageType, candidate, None)
+        if member is not None:
+            return member
+    return MessageType.TEXT
 
 
 def message_direction(message: Dict[str, Any]) -> str:
@@ -607,7 +715,7 @@ class MyZapAdapter(BasePlatformAdapter):
             return False
         text = message_text(msg)
         if not text:
-            logger.debug("[myzap] skipping non-text/media message %s", msg_id)
+            logger.debug("[myzap] skipping empty message %s", msg_id)
             return False
         destination = message_destination(msg)
         if not self._number_allowed(destination):
@@ -624,7 +732,7 @@ class MyZapAdapter(BasePlatformAdapter):
         )
         event = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT,
+            message_type=_message_type_for_kind(message_primary_kind(msg)),
             source=source,
             raw_message=msg,
             message_id=msg_id,
