@@ -139,6 +139,14 @@ def _truthy(value: str | None) -> bool:
 
 
 def _env(name: str, default: str = "") -> str:
+    try:
+        from hermes_cli.config import get_env_value
+
+        value = get_env_value(name)
+        if value is not None:
+            return str(value).strip()
+    except Exception:
+        pass
     return os.getenv(name, default).strip()
 
 

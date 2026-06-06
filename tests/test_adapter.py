@@ -1,5 +1,7 @@
 import asyncio
 import json
+import sys
+import types
 from datetime import datetime, timezone
 
 import pytest
@@ -7,6 +9,7 @@ import pytest
 from hermes_myzap_plugin.adapter import (
     MyZapAdapter,
     PlatformConfig,
+    _stt_api_key_from,
     check_requirements,
     extract_messages,
     iso_utc,
@@ -43,6 +46,25 @@ def test_profile_guard_allows_configured_profile(monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "suporte")
     monkeypatch.setenv("MYZAP_HERMES_PROFILE", "suporte")
     assert check_requirements() is True
+
+
+def test_stt_key_uses_hermes_config_when_not_exported(monkeypatch):
+    monkeypatch.delenv("MYZAP_STT_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    hermes_cli = types.ModuleType("hermes_cli")
+    hermes_config = types.ModuleType("hermes_cli.config")
+
+    def get_env_value(name):
+        if name == "OPENAI_API_KEY":
+            return "profile-openai-key"
+        return None
+
+    hermes_config.get_env_value = get_env_value
+    hermes_cli.config = hermes_config
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", hermes_config)
+
+    assert _stt_api_key_from({}) == "profile-openai-key"
 
 
 def test_normalize_number():
