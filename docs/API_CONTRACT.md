@@ -44,13 +44,32 @@ JSON:
 }
 ```
 
-Também é aceito multipart/form-data com campo repetido `arquivos` para envio de
-documentos, imagens, vídeos, áudios e figurinhas. O texto pode ser omitido
-quando houver anexos.
-
 Header:
 
 - `X-API-Key: <MYZAP_API_KEY>`
+
+## Envio de mídia
+
+`POST /mensagens/midia`
+
+Multipart/form-data:
+
+- `numero`: destino em formato internacional, ex. `5562999999999`.
+- `legenda`: texto opcional enviado junto com a mídia.
+- `arquivo`: arquivo binário único. Este campo é singular porque a API pública
+  do MyZap recebe uma mídia por chamada nesta rota.
+- `tipo`: opcional; use `documento` para forçar envio como documento quando
+  aplicável.
+
+Exemplo:
+
+```bash
+curl -X POST "$MYZAP_BASE_URL/mensagens/midia" \
+  -H "X-API-Key: $MYZAP_API_KEY" \
+  -F "numero=5562999999999" \
+  -F "legenda=Arquivo enviado pelo Hermes" \
+  -F "arquivo=@./contrato.pdf"
+```
 
 ## Webhook futuro
 
