@@ -33,8 +33,9 @@ dos anexos para que o evento continue sendo processado pelo Hermes.
 
 Quando a mensagem vier com anexos que tenham URL, o adapter repassa esses
 endereços em `MessageEvent.media_urls` e os tipos em `MessageEvent.media_types`.
-Anexos de áudio são transcritos quando houver chave de STT configurada no
-perfil Hermes.
+Anexos de áudio são baixados para o cache local do Hermes e enviados como
+`MessageType.VOICE`; a transcrição fica a cargo do pipeline central de STT do
+Hermes, igual aos conectores oficiais.
 
 ## Envio de texto
 

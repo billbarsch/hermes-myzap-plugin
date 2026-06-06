@@ -44,8 +44,8 @@ except Exception:  # pragma: no cover - exercised only when dependency missing
 
 try:
     from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-except ModuleNotFoundError:  # pragma: no cover - lightweight stubs for standalone unit tests
+    from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult, cache_audio_from_url
+except (ImportError, ModuleNotFoundError):  # pragma: no cover - lightweight stubs for standalone unit tests
     from dataclasses import dataclass, field
     from enum import Enum
 
@@ -65,6 +65,14 @@ except ModuleNotFoundError:  # pragma: no cover - lightweight stubs for standalo
 
     class MessageType(Enum):
         TEXT = "text"
+        VOICE = "voice"
+        AUDIO = "audio"
+        PHOTO = "photo"
+        IMAGE = "image"
+        VIDEO = "video"
+        STICKER = "sticker"
+        DOCUMENT = "document"
+        FILE = "file"
 
     @dataclass
     class _SessionSource:
@@ -114,6 +122,10 @@ except ModuleNotFoundError:  # pragma: no cover - lightweight stubs for standalo
         async def handle_message(self, event: MessageEvent) -> None:
             return None
 
+    async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
+        del ext, retries
+        return url
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_BASE = "https://api.myzap.net/api/v1"
@@ -128,10 +140,6 @@ DEFAULT_REQUIRED_PROFILE = ""
 WIDGET_DESTINATION_RE = re.compile(r"^widget_[a-f0-9]{14}$")
 HOME_CHANNEL_NOTICE_PREFIX = "no home channel is set for myzap"
 DEFAULT_STATE_FILENAME = "myzap_poll_state.json"
-DEFAULT_STT_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_STT_MODEL = "whisper-1"
-DEFAULT_STT_MAX_BYTES = 25 * 1024 * 1024
-
 
 
 def _truthy(value: str | None) -> bool:
@@ -173,30 +181,6 @@ def _base_url_from(extra: Dict[str, Any] | None = None) -> str:
 def _api_key_from(extra: Dict[str, Any] | None = None) -> str:
     extra = extra or {}
     return str(extra.get("api_key") or _env("MYZAP_API_KEY") or "").strip()
-
-
-def _stt_api_key_from(extra: Dict[str, Any] | None = None) -> str:
-    extra = extra or {}
-    return str(extra.get("stt_api_key") or _env("MYZAP_STT_API_KEY") or _env("OPENAI_API_KEY") or "").strip()
-
-
-def _stt_base_url_from(extra: Dict[str, Any] | None = None) -> str:
-    extra = extra or {}
-    return str(extra.get("stt_base_url") or _env("MYZAP_STT_BASE_URL", DEFAULT_STT_BASE_URL)).rstrip("/")
-
-
-def _stt_model_from(extra: Dict[str, Any] | None = None) -> str:
-    extra = extra or {}
-    return str(extra.get("stt_model") or _env("MYZAP_STT_MODEL", DEFAULT_STT_MODEL)).strip() or DEFAULT_STT_MODEL
-
-
-def _stt_max_bytes_from(extra: Dict[str, Any] | None = None) -> int:
-    extra = extra or {}
-    raw = str(extra.get("stt_max_bytes") or _env("MYZAP_STT_MAX_BYTES", str(DEFAULT_STT_MAX_BYTES))).strip()
-    try:
-        return max(1024, int(raw))
-    except ValueError:
-        return DEFAULT_STT_MAX_BYTES
 
 
 def _state_path_from(extra: Dict[str, Any] | None = None) -> Path:
@@ -421,7 +405,7 @@ def is_media_summary_text(text: str) -> bool:
 
 def _message_type_for_kind(kind: str):
     desired = {
-        "audio": ("AUDIO", "VOICE"),
+        "audio": ("VOICE", "AUDIO"),
         "image": ("IMAGE", "PHOTO"),
         "video": ("VIDEO",),
         "sticker": ("STICKER",),
@@ -432,6 +416,22 @@ def _message_type_for_kind(kind: str):
         if member is not None:
             return member
     return MessageType.TEXT
+
+
+def _audio_extension_for_attachment(attachment: Dict[str, Any]) -> str:
+    mime_type = attachment_mime_type(attachment).lower()
+    nome = attachment_name(attachment).lower()
+    if "ogg" in mime_type or nome.endswith((".ogg", ".opus")):
+        return ".ogg"
+    if "webm" in mime_type or nome.endswith(".webm"):
+        return ".webm"
+    if "mpeg" in mime_type or "mp3" in mime_type or nome.endswith(".mp3"):
+        return ".mp3"
+    if "wav" in mime_type or nome.endswith(".wav"):
+        return ".wav"
+    if "m4a" in mime_type or "mp4" in mime_type or nome.endswith((".m4a", ".mp4")):
+        return ".m4a"
+    return ".ogg"
 
 
 def message_direction(message: Dict[str, Any]) -> str:
@@ -640,10 +640,6 @@ class MyZapAdapter(BasePlatformAdapter):
         self._seen: "OrderedDict[str, float]" = OrderedDict()
         self._allowed_numbers = _parse_allowed(str(extra.get("allowed_numbers") or _env("MYZAP_ALLOWED_NUMBERS")))
         self._allow_all = bool(extra.get("allow_all_numbers")) or _truthy(_env("MYZAP_ALLOW_ALL_NUMBERS"))
-        self._stt_api_key = _stt_api_key_from(extra)
-        self._stt_base_url = _stt_base_url_from(extra)
-        self._stt_model = _stt_model_from(extra)
-        self._stt_max_bytes = _stt_max_bytes_from(extra)
         self._load_state()
 
     def _load_state(self) -> None:
@@ -789,25 +785,22 @@ class MyZapAdapter(BasePlatformAdapter):
         attachments = message_attachments(msg)
         media_urls: List[str] = []
         media_types: List[str] = []
-        audio_transcripts: List[str] = []
 
         for attachment in attachments:
             url = attachment_url(attachment)
             mime_type = attachment_mime_type(attachment)
+            kind = attachment_kind(attachment)
+            if kind == "audio" and url:
+                cached_url = await self._cache_audio_attachment(attachment)
+                media_urls.append(cached_url or url)
+                media_types.append(mime_type or "audio/ogg")
+                continue
             if url:
                 media_urls.append(url)
-                media_types.append(mime_type or attachment_kind(attachment))
-            if attachment_kind(attachment) == "audio":
-                transcript = await self._transcribe_audio_attachment(attachment)
-                if transcript:
-                    audio_transcripts.append(transcript)
+                media_types.append(mime_type or kind)
 
-        if audio_transcripts:
-            transcript_text = "\n".join(f"🎤 Áudio transcrito: {item}" for item in audio_transcripts)
-            if not text or is_media_summary_text(text):
-                text = transcript_text
-            else:
-                text = f"{text}\n\n{transcript_text}"
+        if any(attachment_kind(attachment) == "audio" for attachment in attachments) and is_media_summary_text(text):
+            text = "(The user sent a message with no text content)"
 
         return {
             "text": text,
@@ -815,52 +808,18 @@ class MyZapAdapter(BasePlatformAdapter):
             "media_types": media_types,
         }
 
-    async def _transcribe_audio_attachment(self, attachment: Dict[str, Any]) -> str:
-        if not self._stt_api_key:
-            logger.debug("[myzap] audio received but STT key is not configured")
-            return ""
-        if self._http_client is None:
-            return ""
-
+    async def _cache_audio_attachment(self, attachment: Dict[str, Any]) -> str:
         url = attachment_url(attachment)
         if not url or not safe_download_url(url):
-            logger.warning("[myzap] skipping audio transcription for unsafe or empty URL")
+            logger.warning("[myzap] skipping audio cache for unsafe or empty URL")
             return ""
 
-        nome = attachment_name(attachment)
-        mime_type = attachment_mime_type(attachment) or mimetypes.guess_type(nome)[0] or "application/octet-stream"
         try:
-            response = await self._http_client.get(url, follow_redirects=True, timeout=30.0)
-            response.raise_for_status()
-            audio_bytes = response.content
-            if len(audio_bytes) < 10:
-                logger.warning("[myzap] audio transcription skipped: downloaded file too small")
-                return ""
-            if len(audio_bytes) > self._stt_max_bytes:
-                logger.warning("[myzap] audio transcription skipped: file has %d bytes, limit is %d", len(audio_bytes), self._stt_max_bytes)
-                return ""
-
-            stt_response = await self._http_client.post(
-                f"{self._stt_base_url}/audio/transcriptions",
-                headers={"Authorization": f"Bearer {self._stt_api_key}"},
-                data={"model": self._stt_model},
-                files={"file": (nome, audio_bytes, mime_type)},
-                timeout=60.0,
-            )
-            stt_response.raise_for_status()
-            result = stt_response.json()
-            text = str(result.get("text") or "").strip()
-            if text:
-                return text
-            choices = result.get("choices") if isinstance(result, dict) else None
-            if isinstance(choices, list) and choices:
-                content = str((choices[0].get("message") or {}).get("content") or "").strip()
-                if content:
-                    return content
-            logger.warning("[myzap] audio transcription returned empty text")
-            return ""
+            cached_path = await cache_audio_from_url(url, ext=_audio_extension_for_attachment(attachment))
+            logger.info("[myzap] cached user voice at %s", cached_path)
+            return cached_path
         except Exception as exc:
-            logger.warning("[myzap] audio transcription failed: %s", exc)
+            logger.warning("[myzap] failed to cache voice: %s", exc)
             return ""
 
     async def _dispatch_if_relevant(self, msg: Dict[str, Any]) -> bool:

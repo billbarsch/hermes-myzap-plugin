@@ -12,7 +12,7 @@ Status: v0.2, instalável/testável localmente, sem credenciais no repositório.
 - Recebe mensagens por polling incremental em `GET {MYZAP_BASE_URL}/mensagens`.
 - Envia respostas por `POST {MYZAP_BASE_URL}/mensagens/texto`.
 - Recebe anexos do MyZap e repassa URLs/tipos de mídia ao Hermes quando disponíveis.
-- Transcreve áudios recebidos quando `MYZAP_STT_API_KEY` ou `OPENAI_API_KEY` estiver configurada.
+- Baixa áudios recebidos para o cache do Hermes e entrega como `MessageType.VOICE`, usando o mesmo fluxo central de transcrição dos conectores Telegram/WhatsApp.
 - Envia documentos, imagens, vídeos e áudios por `POST {MYZAP_BASE_URL}/mensagens/midia`.
 - Deduplica mensagens por `messageId`/`id` e persiste cursor/estado para evitar replay após restart.
 - Preserva destinos de widget público no formato `widget_<hash>`.
@@ -44,7 +44,6 @@ MYZAP_ALLOWED_USERS=5562999999999
 MYZAP_HOME_NUMBER=5562999999999
 MYZAP_POLL_INTERVAL_SECONDS=10
 MYZAP_POLL_LOOKBACK_SECONDS=120
-MYZAP_STT_API_KEY=coloque_sua_chave_de_transcricao_aqui
 ```
 
 O adapter também aceita:
@@ -55,10 +54,8 @@ O adapter também aceita:
 - `MYZAP_ALLOW_ALL_NUMBERS=true`: desliga o filtro local do adapter.
 - `MYZAP_CURSOR`: cursor inicial opcional.
 - `MYZAP_STATE_PATH`: caminho opcional para o arquivo de estado do polling.
-- `MYZAP_STT_API_KEY`: chave opcional para transcrever áudio recebido. Se não for definida, o plugin tenta usar `OPENAI_API_KEY`.
-- `MYZAP_STT_BASE_URL`: base OpenAI-compatible para transcrição. Padrão: `https://api.openai.com/v1`.
-- `MYZAP_STT_MODEL`: modelo de transcrição. Padrão: `whisper-1`.
-- `MYZAP_STT_MAX_BYTES`: limite máximo do áudio baixado para transcrição. Padrão: `26214400`.
+
+Para transcrição de áudio, use a configuração `stt` padrão do Hermes. O plugin MyZap apenas cacheia o áudio recebido e entrega o evento como voz para o gateway.
 
 ## Instalação para desenvolvimento
 
@@ -167,8 +164,8 @@ Resumo:
 
 - Envio de mídia disponível pelo fluxo do agente via `send_document`/`send_image_file`/`send_voice`/`send_video`, usando `POST /mensagens/midia`.
 - Recebimento de mídia preenche `MessageEvent.media_urls` e `MessageEvent.media_types` quando o MyZap fornece URL do anexo.
-- Áudios recebidos são baixados e enviados para `/audio/transcriptions` quando houver chave de STT configurada.
-- Se a transcrição falhar ou não estiver configurada, o plugin mantém o resumo textual do anexo para o agente não perder o evento.
+- Áudios recebidos são baixados para o cache local do Hermes e enviados ao gateway como `MessageType.VOICE`.
+- A transcrição é feita pelo pipeline central do Hermes, conforme a configuração `stt` do perfil.
 
 ## Limites atuais
 

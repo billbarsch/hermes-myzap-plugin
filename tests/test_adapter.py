@@ -1,15 +1,13 @@
 import asyncio
 import json
-import sys
-import types
 from datetime import datetime, timezone
 
 import pytest
 
+import hermes_myzap_plugin.adapter as adapter_module
 from hermes_myzap_plugin.adapter import (
     MyZapAdapter,
     PlatformConfig,
-    _stt_api_key_from,
     check_requirements,
     extract_messages,
     iso_utc,
@@ -46,25 +44,6 @@ def test_profile_guard_allows_configured_profile(monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "suporte")
     monkeypatch.setenv("MYZAP_HERMES_PROFILE", "suporte")
     assert check_requirements() is True
-
-
-def test_stt_key_uses_hermes_config_when_not_exported(monkeypatch):
-    monkeypatch.delenv("MYZAP_STT_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    hermes_cli = types.ModuleType("hermes_cli")
-    hermes_config = types.ModuleType("hermes_cli.config")
-
-    def get_env_value(name):
-        if name == "OPENAI_API_KEY":
-            return "profile-openai-key"
-        return None
-
-    hermes_config.get_env_value = get_env_value
-    hermes_cli.config = hermes_config
-    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
-    monkeypatch.setitem(sys.modules, "hermes_cli.config", hermes_config)
-
-    assert _stt_api_key_from({}) == "profile-openai-key"
 
 
 def test_normalize_number():
@@ -162,20 +141,6 @@ class SequenceClient(FakeClient):
     async def get(self, url, params=None, headers=None, **kwargs):
         self.get_calls.append((url, dict(params or {}), headers, kwargs))
         return self.responses.pop(0)
-
-
-class MediaClient(FakeClient):
-    async def get(self, url, params=None, headers=None, **kwargs):
-        self.get_calls.append((url, dict(params or {}), headers, kwargs))
-        if url == "https://storage/audio.webm":
-            return FakeResponse(content=b"webm-audio-bytes")
-        return FakeResponse(payload=self.payload)
-
-    async def post(self, url, json=None, data=None, files=None, headers=None, **kwargs):
-        self.posts.append({"url": url, "json": json, "data": data, "files": files, "headers": headers, "kwargs": kwargs})
-        if url.endswith("/audio/transcriptions"):
-            return FakeResponse(status_code=200, payload={"text": "Preciso saber os planos do sistema."})
-        return FakeResponse(status_code=201, payload={"messageId": "sent-1"})
 
 
 def test_poll_state_survives_restart_and_blocks_replay(monkeypatch, tmp_path):
@@ -288,24 +253,29 @@ def test_poll_once_dispatches_inbound_audio_without_text(monkeypatch):
         a.handle_message = capture
         count = await a.poll_once()
         assert count == 1
-        assert "áudio" in events[0].text.lower()
+        assert events[0].text == "(The user sent a message with no text content)"
+        assert events[0].message_type.name == "VOICE"
+        assert events[0].media_urls == ["https://storage/nota.mp3"]
+        assert events[0].media_types == ["audio/mpeg"]
         assert events[0].source.chat_id == "widget_abc123def45678"
         assert events[0].raw_message["arquivos"][0]["mimeType"] == "audio/mpeg"
 
     asyncio.run(run())
 
 
-def test_poll_once_transcribes_inbound_audio(monkeypatch):
+def test_poll_once_dispatches_inbound_audio_for_hermes_transcription(monkeypatch):
     async def run():
         monkeypatch.setenv("HERMES_PROFILE", "atendimento")
-        cfg = PlatformConfig(enabled=True, extra={
-            "base_url": "https://example.test/api/v1",
-            "api_key": "key",
-            "stt_api_key": "stt-key",
-            "stt_base_url": "https://stt.example/v1",
-        })
+        cache_calls = []
+
+        async def fake_cache_audio_from_url(url, ext=".ogg", retries=2):
+            cache_calls.append({"url": url, "ext": ext, "retries": retries})
+            return "/tmp/hermes/audio/audio_123.webm"
+
+        monkeypatch.setattr(adapter_module, "cache_audio_from_url", fake_cache_audio_from_url)
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
         a = MyZapAdapter(cfg)
-        fake = MediaClient({
+        fake = FakeClient({
             "mensagens": [
                 {
                     "id": 13,
@@ -335,12 +305,12 @@ def test_poll_once_transcribes_inbound_audio(monkeypatch):
         a.handle_message = capture
         count = await a.poll_once()
         assert count == 1
-        assert events[0].text == "🎤 Áudio transcrito: Preciso saber os planos do sistema."
-        assert events[0].media_urls == ["https://storage/audio.webm"]
+        assert events[0].text == "(The user sent a message with no text content)"
+        assert events[0].message_type.name == "VOICE"
+        assert events[0].media_urls == ["/tmp/hermes/audio/audio_123.webm"]
         assert events[0].media_types == ["audio/webm"]
-        assert fake.posts[0]["url"] == "https://stt.example/v1/audio/transcriptions"
-        assert fake.posts[0]["files"]["file"][0] == "audio-123.webm"
-        assert fake.posts[0]["files"]["file"][2] == "audio/webm"
+        assert cache_calls == [{"url": "https://storage/audio.webm", "ext": ".webm", "retries": 2}]
+        assert fake.posts == []
 
     asyncio.run(run())
 
