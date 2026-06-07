@@ -697,7 +697,12 @@ class MyZapAdapter(BasePlatformAdapter):
         self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
         self._poll_task = asyncio.create_task(self._poll_loop())
         self._mark_connected()
-        logger.info("[myzap] connected in polling mode: base=%s interval=%ss", self._base_url, self._poll_interval)
+        logger.info(
+            "[myzap] connected in polling mode: base=%s interval=%ss source=%s",
+            self._base_url,
+            self._poll_interval,
+            __file__,
+        )
         return True
 
     async def disconnect(self) -> None:
@@ -801,6 +806,15 @@ class MyZapAdapter(BasePlatformAdapter):
 
         if any(attachment_kind(attachment) == "audio" for attachment in attachments) and is_media_summary_text(text):
             text = "(The user sent a message with no text content)"
+
+        if attachments or is_media_summary_text(text):
+            logger.info(
+                "[myzap] prepared inbound message: message=%s attachments=%d media=%d text=%r",
+                message_identity(msg),
+                len(attachments),
+                len(media_urls),
+                text[:120],
+            )
 
         return {
             "text": text,
