@@ -857,6 +857,14 @@ class MyZapAdapter(BasePlatformAdapter):
             media_types=prepared_message["media_types"],
             timestamp=message_created_at(msg),
         )
+        if event.media_urls:
+            logger.info(
+                "[myzap] dispatching inbound media: message=%s type=%s media=%d first_media_type=%s",
+                msg_id,
+                getattr(event.message_type, "value", str(event.message_type)),
+                len(event.media_urls),
+                event.media_types[0] if event.media_types else "",
+            )
         await self.handle_message(event)
         return True
 
