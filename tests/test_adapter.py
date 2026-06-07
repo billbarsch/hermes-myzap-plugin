@@ -17,6 +17,8 @@ from hermes_myzap_plugin.adapter import (
     message_attachments,
     message_text,
     normalize_number,
+    texto_contexto_externo_widget,
+    usuario_externo_id,
     verify_webhook_signature,
 )
 
@@ -379,6 +381,43 @@ def test_poll_once_dispatches_widget_inbound_with_replyable_chat_id(monkeypatch)
         assert events[0].text == "Oi widget"
         assert events[0].source.chat_id == "widget_abc123def45678"
         assert events[0].source.user_id == "widget_abc123def45678"
+
+    asyncio.run(run())
+
+
+def test_poll_once_dispatches_widget_inbound_with_external_identity(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        mensagem = {
+            "id": 23,
+            "direcao": "RECEBIDA",
+            "conteudo": "Consultar meus dados",
+            "remoteJid": "widget_abc123def45678",
+            "conversaId": 8,
+            "criadoEm": "2026-05-31T12:00:00.000Z",
+            "usuarioExternoId": "api-token-usuario",
+            "usuarioExternoNome": "Maria Cliente",
+            "contextoExterno": {"sistema": "agilcontabil"},
+        }
+        fake = FakeClient({"mensagens": [mensagem]})
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 1
+        assert usuario_externo_id(mensagem) == "api-token-usuario"
+        assert events[0].source.chat_id == "widget_abc123def45678"
+        assert events[0].source.user_id == "api-token-usuario"
+        assert events[0].source.user_name == "Maria Cliente"
+        assert "usuarioExternoId: api-token-usuario" in events[0].channel_context
+        assert "sistema: agilcontabil" in events[0].channel_context
+        assert texto_contexto_externo_widget(mensagem).startswith("Dados de identificação")
 
     asyncio.run(run())
 

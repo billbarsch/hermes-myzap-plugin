@@ -518,6 +518,85 @@ def message_sender_name(message: Dict[str, Any]) -> str:
     return message_number(message) or "MyZap"
 
 
+def limitar_texto_contexto(valor: Any, limite: int = 2000) -> str:
+    if isinstance(valor, (dict, list)):
+        texto = json.dumps(valor, ensure_ascii=False, default=str)
+    else:
+        texto = str(valor or "")
+    texto = texto.strip()
+    if len(texto) <= limite:
+        return texto
+    return texto[:limite] + "..."
+
+
+def valor_identificacao_externa(message: Dict[str, Any], chaves: Iterable[str]) -> str:
+    for key in chaves:
+        value = message.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    for parent in ("chatWidgetSessao", "chat_widget_sessao", "sessaoWidget", "sessao_widget", "widget", "sessao", "conversa"):
+        value = message.get(parent)
+        if isinstance(value, dict):
+            nested = valor_identificacao_externa(value, chaves)
+            if nested:
+                return nested
+    return ""
+
+
+def usuario_externo_id(message: Dict[str, Any]) -> str:
+    return valor_identificacao_externa(
+        message,
+        ("usuarioExternoId", "usuario_externo_id", "externalUserId", "external_user_id"),
+    )
+
+
+def usuario_externo_nome(message: Dict[str, Any]) -> str:
+    return valor_identificacao_externa(
+        message,
+        ("usuarioExternoNome", "usuario_externo_nome", "externalUserName", "external_user_name"),
+    )
+
+
+def contexto_externo_widget(message: Dict[str, Any]) -> Dict[str, Any]:
+    for key in ("contextoExterno", "contexto_externo", "externalContext", "external_context"):
+        value = message.get(key)
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, dict) else {"valor": value.strip()}
+            except Exception:
+                return {"valor": value.strip()}
+    for parent in ("chatWidgetSessao", "chat_widget_sessao", "sessaoWidget", "sessao_widget", "widget", "sessao", "conversa"):
+        value = message.get(parent)
+        if isinstance(value, dict):
+            nested = contexto_externo_widget(value)
+            if nested:
+                return nested
+    return {}
+
+
+def texto_contexto_externo_widget(message: Dict[str, Any]) -> str:
+    usuario_id = usuario_externo_id(message)
+    usuario_nome = usuario_externo_nome(message)
+    contexto = contexto_externo_widget(message)
+    if not usuario_id and not usuario_nome and not contexto:
+        return ""
+
+    linhas = ["Dados de identificação enviados pelo site onde o chat está incorporado:"]
+    if usuario_id:
+        linhas.append(f"usuarioExternoId: {limitar_texto_contexto(usuario_id)}")
+    if usuario_nome:
+        linhas.append(f"usuarioExternoNome: {limitar_texto_contexto(usuario_nome, 300)}")
+    for chave in sorted(contexto.keys()):
+        valor = contexto.get(chave)
+        if valor is None or valor == "":
+            continue
+        linhas.append(f"{chave}: {limitar_texto_contexto(valor)}")
+    return "\n".join(linhas)
+
+
 def message_created_at(message: Dict[str, Any]) -> datetime:
     for key in ("criadoEm", "createdAt", "timestamp", "dataHora", "data"):
         value = message.get(key)
@@ -853,24 +932,36 @@ class MyZapAdapter(BasePlatformAdapter):
             logger.info("[myzap] skipping destination outside adapter allowlist: %s", destination[-4:] if destination else "unknown")
             return False
         chat_id = destination if is_widget_destination(destination) else (message_chat_id(msg) or destination)
+        nome_remetente = usuario_externo_nome(msg) or message_sender_name(msg)
+        id_remetente = usuario_externo_id(msg) or destination or chat_id
         source = self.build_source(
             chat_id=chat_id,
-            chat_name=message_sender_name(msg),
+            chat_name=nome_remetente,
             chat_type="dm",
-            user_id=destination or chat_id,
-            user_name=message_sender_name(msg),
+            user_id=id_remetente,
+            user_name=nome_remetente,
             message_id=msg_id,
         )
-        event = MessageEvent(
-            text=text,
-            message_type=_message_type_for_kind(message_primary_kind(msg)),
-            source=source,
-            raw_message=msg,
-            message_id=msg_id,
-            media_urls=prepared_message["media_urls"],
-            media_types=prepared_message["media_types"],
-            timestamp=message_created_at(msg),
-        )
+        contexto_canal = texto_contexto_externo_widget(msg)
+        dados_evento = {
+            "text": text,
+            "message_type": _message_type_for_kind(message_primary_kind(msg)),
+            "source": source,
+            "raw_message": msg,
+            "message_id": msg_id,
+            "media_urls": prepared_message["media_urls"],
+            "media_types": prepared_message["media_types"],
+            "timestamp": message_created_at(msg),
+        }
+        if contexto_canal:
+            dados_evento["channel_context"] = contexto_canal
+        try:
+            event = MessageEvent(**dados_evento)
+        except TypeError:
+            dados_evento.pop("channel_context", None)
+            event = MessageEvent(**dados_evento)
+            if contexto_canal:
+                event.channel_context = contexto_canal
         if event.media_urls:
             logger.info(
                 "[myzap] dispatching inbound media: message=%s type=%s media=%d first_media_type=%s",
