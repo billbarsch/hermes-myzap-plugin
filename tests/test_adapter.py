@@ -471,9 +471,10 @@ def test_poll_once_rejects_malformed_widget_destination(monkeypatch):
     asyncio.run(run())
 
 
-def test_runtime_status_filter_blocks_only_compaction_noise_case_insensitive():
+def test_runtime_status_filter_blocks_only_known_runtime_noise_case_insensitive():
     assert is_filtered_runtime_status("Preflight compression starting") is True
     assert is_filtered_runtime_status("status: COMPACTING CONTEXT before reply") is True
+    assert is_filtered_runtime_status("gateway SHUTTING down") is True
     assert is_filtered_runtime_status("Cliente perguntou sobre compactação de contexto") is False
     assert is_filtered_runtime_status("Resposta normal ao cliente") is False
 
