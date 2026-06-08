@@ -139,7 +139,12 @@ RECONNECT_BACKOFF_SECONDS = (2, 5, 10, 30, 60)
 DEFAULT_REQUIRED_PROFILE = ""
 WIDGET_DESTINATION_RE = re.compile(r"^widget_[a-f0-9]{14}$")
 HOME_CHANNEL_NOTICE_PREFIX = "no home channel is set for myzap"
-FILTERED_RUNTIME_STATUS_TERMS = ("preflight compression", "compacting context", "gateway shutting down")
+FILTERED_RUNTIME_STATUS_TERMS = (
+    "preflight compression",
+    "compacting context",
+    "gateway shutting down",
+    "Skipping concurrent compression",
+)
 DEFAULT_STATE_FILENAME = "myzap_poll_state.json"
 
 
@@ -226,7 +231,7 @@ def is_public_operational_notice(content: Any) -> bool:
 def is_filtered_runtime_status(content: Any) -> bool:
     """Suppress local Hermes runtime compaction statuses before they reach MyZap."""
     text = str(content or "").casefold()
-    return any(term in text for term in FILTERED_RUNTIME_STATUS_TERMS)
+    return any(term.casefold() in text for term in FILTERED_RUNTIME_STATUS_TERMS)
 
 
 def iso_utc(dt: datetime) -> str:

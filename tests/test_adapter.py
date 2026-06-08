@@ -475,6 +475,7 @@ def test_runtime_status_filter_blocks_only_known_runtime_noise_case_insensitive(
     assert is_filtered_runtime_status("Preflight compression starting") is True
     assert is_filtered_runtime_status("status: COMPACTING CONTEXT before reply") is True
     assert is_filtered_runtime_status("gateway SHUTTING down") is True
+    assert is_filtered_runtime_status("status: SKIPPING CONCURRENT COMPRESSION already running") is True
     assert is_filtered_runtime_status("Cliente perguntou sobre compactação de contexto") is False
     assert is_filtered_runtime_status("Resposta normal ao cliente") is False
 
@@ -515,10 +516,17 @@ def test_send_suppresses_filtered_runtime_status(monkeypatch):
         a = MyZapAdapter(cfg)
         fake = FakeClient({})
         a._http_client = fake
-        result = await a.send("+55 62 99999-0000", "Status: compacting context before response")
+        result = await a.send("+55 62 99999-0000", "Status: Skipping concurrent compression already running")
         assert result.success is True
         assert result.message_id == "suppressed-runtime-status"
         assert fake.posts == []
+
+        result = await a.send("+55 62 99999-0000", "Resposta normal ao cliente")
+        assert result.success is True
+        assert result.message_id != "suppressed-runtime-status"
+        assert len(fake.posts) == 1
+        assert fake.posts[0]["url"] == "https://example.test/api/v1/mensagens/texto"
+        assert fake.posts[0]["json"] == {"numero": "5562999990000", "texto": "Resposta normal ao cliente"}
 
     asyncio.run(run())
 
