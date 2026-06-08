@@ -11,6 +11,7 @@ from hermes_myzap_plugin.adapter import (
     check_requirements,
     extract_messages,
     iso_utc,
+    is_filtered_runtime_status,
     is_public_operational_notice,
     is_widget_destination,
     message_destination,
@@ -470,6 +471,13 @@ def test_poll_once_rejects_malformed_widget_destination(monkeypatch):
     asyncio.run(run())
 
 
+def test_runtime_status_filter_blocks_only_compaction_noise_case_insensitive():
+    assert is_filtered_runtime_status("Preflight compression starting") is True
+    assert is_filtered_runtime_status("status: COMPACTING CONTEXT before reply") is True
+    assert is_filtered_runtime_status("Cliente perguntou sobre compactação de contexto") is False
+    assert is_filtered_runtime_status("Resposta normal ao cliente") is False
+
+
 def test_send_posts_widget_destination(monkeypatch):
     async def run():
         monkeypatch.setenv("HERMES_PROFILE", "atendimento")
@@ -498,6 +506,21 @@ def test_send_posts_text(monkeypatch):
         assert fake.posts[0]["json"] == {"numero": "5562999990000", "texto": "Resposta"}
 
     asyncio.run(run())
+
+def test_send_suppresses_filtered_runtime_status(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({})
+        a._http_client = fake
+        result = await a.send("+55 62 99999-0000", "Status: compacting context before response")
+        assert result.success is True
+        assert result.message_id == "suppressed-runtime-status"
+        assert fake.posts == []
+
+    asyncio.run(run())
+
 
 def test_send_document_posts_media(monkeypatch, tmp_path):
     async def run():

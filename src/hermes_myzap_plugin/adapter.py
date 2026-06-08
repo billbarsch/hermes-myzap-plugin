@@ -139,6 +139,7 @@ RECONNECT_BACKOFF_SECONDS = (2, 5, 10, 30, 60)
 DEFAULT_REQUIRED_PROFILE = ""
 WIDGET_DESTINATION_RE = re.compile(r"^widget_[a-f0-9]{14}$")
 HOME_CHANNEL_NOTICE_PREFIX = "no home channel is set for myzap"
+FILTERED_RUNTIME_STATUS_TERMS = ("preflight compression", "compacting context")
 DEFAULT_STATE_FILENAME = "myzap_poll_state.json"
 
 
@@ -220,6 +221,12 @@ def is_public_operational_notice(content: Any) -> bool:
     """Suppress Hermes setup/onboarding notices from public widget transcripts."""
     text = str(content or "").strip().lower()
     return text.startswith(HOME_CHANNEL_NOTICE_PREFIX) and "/sethome" in text
+
+
+def is_filtered_runtime_status(content: Any) -> bool:
+    """Suppress local Hermes runtime compaction statuses before they reach MyZap."""
+    text = str(content or "").casefold()
+    return any(term in text for term in FILTERED_RUNTIME_STATUS_TERMS)
 
 
 def iso_utc(dt: datetime) -> str:
@@ -1014,6 +1021,9 @@ class MyZapAdapter(BasePlatformAdapter):
             destination = normalize_number(destination_raw)
         if not destination:
             return SendResult(success=False, error="missing MyZap destination")
+        if is_filtered_runtime_status(content):
+            logger.info("[myzap] suppressed filtered Hermes runtime status")
+            return SendResult(success=True, message_id="suppressed-runtime-status", raw_response={"suppressed": True})
         if is_widget_destination(destination) and is_public_operational_notice(content):
             logger.info("[myzap] suppressed operational home-channel notice for public widget destination")
             return SendResult(success=True, message_id="suppressed-home-channel-notice", raw_response={"suppressed": True})
@@ -1122,6 +1132,9 @@ async def _standalone_send(
 ) -> Dict[str, Any]:
     if not HTTPX_AVAILABLE:
         return {"error": "myzap standalone send: httpx not installed"}
+    if is_filtered_runtime_status(message):
+        logger.info("[myzap] suppressed filtered Hermes runtime status in standalone send")
+        return {"success": True, "platform": "myzap", "message_id": "suppressed-runtime-status", "suppressed": True}
     extra = getattr(pconfig, "extra", {}) or {}
     api_key = _api_key_from(extra)
     if not api_key:
