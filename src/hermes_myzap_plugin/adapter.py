@@ -142,6 +142,9 @@ HOME_CHANNEL_NOTICE_PREFIX = "no home channel is set for myzap"
 FILTERED_RUNTIME_STATUS_TERMS = (
     "preflight compression",
     "compacting context",
+    "caps context at",
+    "auto-compaction was raised",
+    "compression.codex_",
     "gateway shutting down",
     "Skipping concurrent compression",
     "interrupting current task",

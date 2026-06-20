@@ -17,7 +17,7 @@ keywords = ["hermes-agent", "myzap", "whatsapp", "gateway", "plugin"]
 test = ["pytest>=8"]
 
 [project.entry-points."hermes_agent.plugins"]
-myzap = "hermes_myzap_plugin.adapter:register"
+myzap = "hermes_myzap_plugin"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hermes_myzap_plugin"]
