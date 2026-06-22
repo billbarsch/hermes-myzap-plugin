@@ -214,6 +214,62 @@ def _parse_allowed(raw: str) -> set[str]:
     return {item.strip() for item in raw.split(",") if item.strip()}
 
 
+def _normalizar_item_filtro(valor: Any) -> str:
+    return str(valor or "").strip().casefold()
+
+
+def _valor_contexto_por_caminho(contexto: Dict[str, Any], caminho: str) -> str:
+    atual: Any = contexto
+    for parte in str(caminho or "").split("."):
+        parte = parte.strip()
+        if not parte:
+            continue
+        if not isinstance(atual, dict):
+            return ""
+        atual = atual.get(parte)
+    if isinstance(atual, (dict, list)):
+        return json.dumps(atual, ensure_ascii=False, default=str)
+    return str(atual or "").strip()
+
+
+def _corresponde_padrao_contexto(valor: str, padrao: str) -> bool:
+    valor_normalizado = _normalizar_item_filtro(valor)
+    padrao_normalizado = _normalizar_item_filtro(padrao)
+    if not padrao_normalizado:
+        return False
+    if padrao_normalizado.endswith("*"):
+        return valor_normalizado.startswith(padrao_normalizado[:-1])
+    return valor_normalizado == padrao_normalizado
+
+
+def _contexto_permitido_por_filtro(contexto: Dict[str, Any], filtros: set[str]) -> bool:
+    if not filtros:
+        return True
+    for filtro in filtros:
+        if "=" not in filtro:
+            continue
+        caminho, valores = filtro.split("=", 1)
+        valor_contexto = _valor_contexto_por_caminho(contexto, caminho)
+        for padrao in valores.split("|"):
+            if _corresponde_padrao_contexto(valor_contexto, padrao):
+                return True
+    return False
+
+
+def _contexto_negado_por_filtro(contexto: Dict[str, Any], filtros: set[str]) -> bool:
+    if not filtros:
+        return False
+    for filtro in filtros:
+        if "=" not in filtro:
+            continue
+        caminho, valores = filtro.split("=", 1)
+        valor_contexto = _valor_contexto_por_caminho(contexto, caminho)
+        for padrao in valores.split("|"):
+            if _corresponde_padrao_contexto(valor_contexto, padrao):
+                return True
+    return False
+
+
 def normalize_number(value: Any) -> str:
     """Normalize a phone/JID-ish value to digits only where possible."""
     text = str(value or "").strip()
@@ -735,6 +791,8 @@ class MyZapAdapter(BasePlatformAdapter):
         self._seen: "OrderedDict[str, float]" = OrderedDict()
         self._allowed_numbers = _parse_allowed(str(extra.get("allowed_numbers") or _env("MYZAP_ALLOWED_NUMBERS")))
         self._allow_all = bool(extra.get("allow_all_numbers")) or _truthy(_env("MYZAP_ALLOW_ALL_NUMBERS"))
+        self._widget_context_allow = _parse_allowed(str(extra.get("widget_context_allow") or _env("MYZAP_WIDGET_CONTEXT_ALLOW")))
+        self._widget_context_deny = _parse_allowed(str(extra.get("widget_context_deny") or _env("MYZAP_WIDGET_CONTEXT_DENY")))
         self._load_state()
 
     def _load_state(self) -> None:
@@ -944,6 +1002,14 @@ class MyZapAdapter(BasePlatformAdapter):
             logger.debug("[myzap] skipping empty message %s", msg_id)
             return False
         destination = message_destination(msg)
+        if is_widget_destination(destination):
+            contexto_widget = contexto_externo_widget(msg)
+            if _contexto_negado_por_filtro(contexto_widget, self._widget_context_deny):
+                logger.info("[myzap] skipping widget message denied by context filter: destination=%s", destination)
+                return False
+            if not _contexto_permitido_por_filtro(contexto_widget, self._widget_context_allow):
+                logger.info("[myzap] skipping widget message outside context allow filter: destination=%s", destination)
+                return False
         if not self._number_allowed(destination):
             logger.info("[myzap] skipping destination outside adapter allowlist: %s", destination[-4:] if destination else "unknown")
             return False

@@ -423,6 +423,124 @@ def test_poll_once_dispatches_widget_inbound_with_external_identity(monkeypatch)
     asyncio.run(run())
 
 
+def test_poll_once_filters_widget_by_allowed_context(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendentecompraragora")
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "base_url": "https://example.test/api/v1",
+                "api_key": "key",
+                "widget_context_allow": "origem=compraragora_*|teste_producao_codex",
+            },
+        )
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({
+            "mensagens": [
+                {
+                    "id": 24,
+                    "direcao": "RECEBIDA",
+                    "conteudo": "Oi ComprarAgora",
+                    "remoteJid": "widget_abc123def45678",
+                    "conversaId": 8,
+                    "criadoEm": "2026-05-31T12:00:00.000Z",
+                    "contextoExterno": {"origem": "compraragora_publico"},
+                },
+            ]
+        })
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 1
+        assert events[0].text == "Oi ComprarAgora"
+        assert "origem: compraragora_publico" in events[0].channel_context
+
+    asyncio.run(run())
+
+
+def test_poll_once_blocks_widget_outside_allowed_context(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendentecompraragora")
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "base_url": "https://example.test/api/v1",
+                "api_key": "key",
+                "widget_context_allow": "origem=compraragora_*",
+            },
+        )
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({
+            "mensagens": [
+                {
+                    "id": 25,
+                    "direcao": "RECEBIDA",
+                    "conteudo": "Oi Salão",
+                    "remoteJid": "widget_abc123def45678",
+                    "conversaId": 8,
+                    "criadoEm": "2026-05-31T12:00:00.000Z",
+                    "contextoExterno": {"origem": "geranet_salao"},
+                },
+            ]
+        })
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 0
+        assert events == []
+
+    asyncio.run(run())
+
+
+def test_poll_once_denies_widget_by_context(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendente-salao")
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "base_url": "https://example.test/api/v1",
+                "api_key": "key",
+                "widget_context_deny": "origem=compraragora_*",
+            },
+        )
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({
+            "mensagens": [
+                {
+                    "id": 26,
+                    "direcao": "RECEBIDA",
+                    "conteudo": "Oi ComprarAgora",
+                    "remoteJid": "widget_abc123def45678",
+                    "conversaId": 8,
+                    "criadoEm": "2026-05-31T12:00:00.000Z",
+                    "contextoExterno": {"origem": "compraragora_publico"},
+                },
+            ]
+        })
+        a._http_client = fake
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 0
+        assert events == []
+
+    asyncio.run(run())
+
+
 def test_poll_once_allows_valid_widget_even_when_numbers_allowlisted(monkeypatch):
     async def run():
         monkeypatch.setenv("HERMES_PROFILE", "atendimento")
