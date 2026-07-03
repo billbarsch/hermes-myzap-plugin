@@ -837,7 +837,7 @@ class MyZapAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("[myzap] failed to persist poll state %s: %s", self._state_path, exc)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not HTTPX_AVAILABLE:
             logger.warning("[myzap] httpx not installed. Run: pip install httpx")
             return False
