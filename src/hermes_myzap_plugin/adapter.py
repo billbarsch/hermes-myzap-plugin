@@ -141,6 +141,7 @@ WIDGET_DESTINATION_RE = re.compile(r"^widget_[a-f0-9]{14}$")
 HOME_CHANNEL_NOTICE_PREFIX = "no home channel is set for myzap"
 FILTERED_RUNTIME_STATUS_TERMS = (
     "preflight compression",
+    "pre-api compression",
     "compacting context",
     "caps context at",
     "auto-compaction was raised",

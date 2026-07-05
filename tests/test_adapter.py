@@ -591,6 +591,7 @@ def test_poll_once_rejects_malformed_widget_destination(monkeypatch):
 
 def test_runtime_status_filter_blocks_only_known_runtime_noise_case_insensitive():
     assert is_filtered_runtime_status("Preflight compression starting") is True
+    assert is_filtered_runtime_status("status: PRE-API COMPRESSION before reply") is True
     assert is_filtered_runtime_status("status: COMPACTING CONTEXT before reply") is True
     assert is_filtered_runtime_status("Codex gpt-5.5 caps context at 272K, so auto-compaction was raised") is True
     assert is_filtered_runtime_status("Opt back out: hermes config set compression.codex_gpt55_autoraise false") is True
