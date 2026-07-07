@@ -598,6 +598,7 @@ def test_runtime_status_filter_blocks_only_known_runtime_noise_case_insensitive(
     assert is_filtered_runtime_status("gateway SHUTTING down") is True
     assert is_filtered_runtime_status("status: SKIPPING CONCURRENT COMPRESSION already running") is True
     assert is_filtered_runtime_status("Agent note: INTERRUPTING CURRENT TASK to reload context") is True
+    assert is_filtered_runtime_status("Self-improvement review: patched plugin successfully") is True
     assert is_filtered_runtime_status("Cliente perguntou sobre compactação de contexto") is False
     assert is_filtered_runtime_status("Resposta normal ao cliente") is False
 
@@ -644,6 +645,11 @@ def test_send_suppresses_filtered_runtime_status(monkeypatch):
         assert fake.posts == []
 
         result = await a.send("+55 62 99999-0000", "Agent note: INTERRUPTING CURRENT TASK to reload context")
+        assert result.success is True
+        assert result.message_id == "suppressed-runtime-status"
+        assert fake.posts == []
+
+        result = await a.send("+55 62 99999-0000", "Self-improvement review: patched plugin successfully")
         assert result.success is True
         assert result.message_id == "suppressed-runtime-status"
         assert fake.posts == []

@@ -149,6 +149,7 @@ FILTERED_RUNTIME_STATUS_TERMS = (
     "gateway shutting down",
     "Skipping concurrent compression",
     "interrupting current task",
+    "self-improvement review",
 )
 DEFAULT_STATE_FILENAME = "myzap_poll_state.json"
 
