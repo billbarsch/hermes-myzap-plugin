@@ -463,6 +463,50 @@ def test_widget_injeta_credencial_mcp_integra_na_ferramenta(monkeypatch):
     asyncio.run(run())
 
 
+def test_widget_injeta_credencial_usando_id_interno_do_historico(monkeypatch):
+    async def run():
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        adaptador = MyZapAdapter(cfg)
+        credencial = "b" * 63 + "5"
+        chave_sessao = "agent:main:myzap:dm:widget_abc123def45678"
+        mensagem = {
+            "id": 231,
+            "direcao": "RECEBIDA",
+            "conteudo": "Consultar ranking",
+            "remoteJid": "widget_abc123def45678",
+            "conversaId": 8,
+            "criadoEm": "2026-08-07T12:00:00.000Z",
+            "usuarioExternoId": credencial,
+            "contextoExterno": {
+                "mcp_preferido": "maisagil",
+                "mcp_maisagil_parametro_credencial": "chave_api",
+            },
+        }
+        adaptador._http_client = FakeClient({"mensagens": [mensagem]})
+        adaptador.handle_message = lambda event: asyncio.sleep(0)
+
+        assert await adaptador.poll_once() == 1
+
+        caminho_sessoes = adapter_module.caminho_registro_sessoes_hermes()
+        caminho_sessoes.parent.mkdir(parents=True, exist_ok=True)
+        caminho_sessoes.write_text(
+            json.dumps({chave_sessao: {"session_id": "20260807_120000_abc123"}}),
+            encoding="utf-8",
+        )
+
+        resultado = injetar_credencial_mcp_widget(
+            tool_name="mcp__maisagil__relatorios_vendas_clientes_consultar",
+            args={"chave_api": credencial[:-1], "limite": 5},
+            session_id="20260807_120000_abc123",
+        )
+
+        assert resultado is not None
+        assert resultado["args"]["chave_api"] == credencial
+        assert resultado["args"]["limite"] == 5
+
+    asyncio.run(run())
+
+
 def test_widget_nao_injeta_credencial_em_outro_mcp():
     adapter_module._credenciais_mcp_por_sessao[
         "agent:main:myzap:dm:widget_abc123def45678"

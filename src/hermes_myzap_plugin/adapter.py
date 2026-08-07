@@ -688,6 +688,38 @@ def registrar_credencial_mcp_sessao(chave_sessao: str, message: Dict[str, Any]) 
             _credenciais_mcp_por_sessao.popitem(last=False)
 
 
+def caminho_registro_sessoes_hermes() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+
+        raiz_hermes = Path(get_hermes_home())
+    except Exception:
+        raiz_hermes = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+
+    return raiz_hermes / "sessions" / "sessions.json"
+
+
+def chave_sessao_logica_por_id_interno(session_id: str) -> str:
+    if not session_id:
+        return ""
+
+    try:
+        sessoes = json.loads(caminho_registro_sessoes_hermes().read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+
+    if not isinstance(sessoes, dict):
+        return ""
+
+    for chave_sessao, dados_sessao in sessoes.items():
+        if not isinstance(dados_sessao, dict):
+            continue
+        if str(dados_sessao.get("session_id") or "") == session_id:
+            return str(chave_sessao)
+
+    return ""
+
+
 def injetar_credencial_mcp_widget(
     *,
     tool_name: str = "",
@@ -698,6 +730,17 @@ def injetar_credencial_mcp_widget(
     del kwargs
     with _credenciais_mcp_lock:
         configuracao = _credenciais_mcp_por_sessao.get(session_id)
+
+    if configuracao is None:
+        chave_sessao = chave_sessao_logica_por_id_interno(session_id)
+        if chave_sessao:
+            with _credenciais_mcp_lock:
+                configuracao = _credenciais_mcp_por_sessao.get(chave_sessao)
+                if configuracao is not None:
+                    _credenciais_mcp_por_sessao[session_id] = configuracao
+                    _credenciais_mcp_por_sessao.move_to_end(session_id)
+                    while len(_credenciais_mcp_por_sessao) > MAX_CREDENCIAIS_MCP_SESSAO:
+                        _credenciais_mcp_por_sessao.popitem(last=False)
 
     if configuracao is None:
         return None
