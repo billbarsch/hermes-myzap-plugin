@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections import Counter, OrderedDict
 from datetime import datetime, timedelta, timezone
@@ -45,6 +46,7 @@ except Exception:  # pragma: no cover - exercised only when dependency missing
 try:
     from gateway.config import Platform, PlatformConfig
     from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult, cache_audio_from_url
+    from gateway.session import build_session_key
 except (ImportError, ModuleNotFoundError):  # pragma: no cover - lightweight stubs for standalone unit tests
     from dataclasses import dataclass, field
     from enum import Enum
@@ -126,6 +128,11 @@ except (ImportError, ModuleNotFoundError):  # pragma: no cover - lightweight stu
         del ext, retries
         return url
 
+    def build_session_key(source: Any, **kwargs: Any) -> str:
+        del kwargs
+        plataforma = getattr(getattr(source, "platform", None), "value", "myzap")
+        return f"agent:main:{plataforma}:dm:{getattr(source, 'chat_id', '')}"
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_BASE = "https://api.myzap.net/api/v1"
@@ -138,6 +145,10 @@ DEDUP_MAX_SIZE = 5000
 RECONNECT_BACKOFF_SECONDS = (2, 5, 10, 30, 60)
 DEFAULT_REQUIRED_PROFILE = ""
 WIDGET_DESTINATION_RE = re.compile(r"^widget_[a-f0-9]{14}$")
+MAX_CREDENCIAIS_MCP_SESSAO = 5000
+
+_credenciais_mcp_por_sessao: "OrderedDict[str, Tuple[str, str, str]]" = OrderedDict()
+_credenciais_mcp_lock = threading.Lock()
 HOME_CHANNEL_NOTICE_PREFIX = "no home channel is set for myzap"
 FILTERED_RUNTIME_STATUS_TERMS = (
     "preflight compression",
@@ -651,6 +662,58 @@ def contexto_externo_widget(message: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def configuracao_credencial_mcp_widget(message: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    contexto = contexto_externo_widget(message)
+    servidor = str(contexto.get("mcp_preferido") or "").strip()
+    if not servidor or not re.fullmatch(r"[A-Za-z0-9_-]+", servidor):
+        return None
+
+    parametro = str(contexto.get(f"mcp_{servidor}_parametro_credencial") or "").strip()
+    credencial = usuario_externo_id(message)
+    if not parametro or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", parametro) or not credencial:
+        return None
+
+    return servidor, parametro, credencial
+
+
+def registrar_credencial_mcp_sessao(chave_sessao: str, message: Dict[str, Any]) -> None:
+    configuracao = configuracao_credencial_mcp_widget(message)
+    if not chave_sessao or configuracao is None:
+        return
+
+    with _credenciais_mcp_lock:
+        _credenciais_mcp_por_sessao[chave_sessao] = configuracao
+        _credenciais_mcp_por_sessao.move_to_end(chave_sessao)
+        while len(_credenciais_mcp_por_sessao) > MAX_CREDENCIAIS_MCP_SESSAO:
+            _credenciais_mcp_por_sessao.popitem(last=False)
+
+
+def injetar_credencial_mcp_widget(
+    *,
+    tool_name: str = "",
+    args: Optional[Dict[str, Any]] = None,
+    session_id: str = "",
+    **kwargs: Any,
+) -> Optional[Dict[str, Any]]:
+    del kwargs
+    with _credenciais_mcp_lock:
+        configuracao = _credenciais_mcp_por_sessao.get(session_id)
+
+    if configuracao is None:
+        return None
+
+    servidor, parametro, credencial = configuracao
+    if not str(tool_name or "").startswith(f"mcp__{servidor}__"):
+        return None
+
+    argumentos = dict(args or {})
+    argumentos[parametro] = credencial
+    return {
+        "args": argumentos,
+        "middleware": "myzap_credencial_mcp_sessao",
+    }
+
+
 def texto_contexto_externo_widget(message: Dict[str, Any]) -> str:
     usuario_id = usuario_externo_id(message)
     usuario_nome = usuario_externo_nome(message)
@@ -1026,6 +1089,12 @@ class MyZapAdapter(BasePlatformAdapter):
             user_name=nome_remetente,
             message_id=msg_id,
         )
+        chave_sessao = build_session_key(
+            source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+        registrar_credencial_mcp_sessao(chave_sessao, msg)
         contexto_canal = texto_contexto_externo_widget(msg)
         dados_evento = {
             "text": text,
@@ -1275,6 +1344,7 @@ def _env_enablement() -> dict | None:
 
 
 def register(ctx) -> None:
+    ctx.register_middleware("tool_request", injetar_credencial_mcp_widget)
     ctx.register_platform(
         name="myzap",
         label="MyZap",

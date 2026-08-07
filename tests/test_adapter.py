@@ -14,6 +14,7 @@ from hermes_myzap_plugin.adapter import (
     is_filtered_runtime_status,
     is_public_operational_notice,
     is_widget_destination,
+    injetar_credencial_mcp_widget,
     message_destination,
     message_attachments,
     message_text,
@@ -27,6 +28,7 @@ from hermes_myzap_plugin.adapter import (
 @pytest.fixture(autouse=True)
 def isolated_hermes_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    adapter_module._credenciais_mcp_por_sessao.clear()
 
 
 def test_profile_guard_blocks_wrong_profile(monkeypatch):
@@ -421,6 +423,58 @@ def test_poll_once_dispatches_widget_inbound_with_external_identity(monkeypatch)
         assert texto_contexto_externo_widget(mensagem).startswith("Dados de identificação")
 
     asyncio.run(run())
+
+
+def test_widget_injeta_credencial_mcp_integra_na_ferramenta(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        adaptador = MyZapAdapter(cfg)
+        credencial = "a" * 63 + "5"
+        mensagem = {
+            "id": 230,
+            "direcao": "RECEBIDA",
+            "conteudo": "Consultar ranking",
+            "remoteJid": "widget_abc123def45678",
+            "conversaId": 8,
+            "criadoEm": "2026-08-07T12:00:00.000Z",
+            "usuarioExternoId": credencial,
+            "contextoExterno": {
+                "mcp_preferido": "maisagil",
+                "mcp_maisagil_parametro_credencial": "chave_api",
+            },
+        }
+        adaptador._http_client = FakeClient({"mensagens": [mensagem]})
+        adaptador.handle_message = lambda event: asyncio.sleep(0)
+
+        assert await adaptador.poll_once() == 1
+
+        resultado = injetar_credencial_mcp_widget(
+            tool_name="mcp__maisagil__relatorios_vendas_clientes_consultar",
+            args={"chave_api": credencial[:-1], "limite": 5},
+            session_id="agent:main:myzap:dm:widget_abc123def45678",
+        )
+
+        assert resultado is not None
+        assert resultado["args"]["chave_api"] == credencial
+        assert len(resultado["args"]["chave_api"]) == 64
+        assert resultado["args"]["limite"] == 5
+
+    asyncio.run(run())
+
+
+def test_widget_nao_injeta_credencial_em_outro_mcp():
+    adapter_module._credenciais_mcp_por_sessao[
+        "agent:main:myzap:dm:widget_abc123def45678"
+    ] = ("maisagil", "chave_api", "credencial-correta")
+
+    resultado = injetar_credencial_mcp_widget(
+        tool_name="mcp__outro__consultar",
+        args={"chave_api": "credencial-original"},
+        session_id="agent:main:myzap:dm:widget_abc123def45678",
+    )
+
+    assert resultado is None
 
 
 def test_poll_once_filters_widget_by_allowed_context(monkeypatch):
