@@ -93,6 +93,8 @@ except (ImportError, ModuleNotFoundError):  # pragma: no cover - lightweight stu
         source: Any = None
         raw_message: Any = None
         message_id: Optional[str] = None
+        reply_to_message_id: Optional[str] = None
+        reply_to_text: Optional[str] = None
         media_urls: List[str] = field(default_factory=list)
         media_types: List[str] = field(default_factory=list)
         timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -459,6 +461,36 @@ def message_identity(message: Dict[str, Any]) -> str:
             return str(value).strip()
     seed = "|".join(str(message.get(k, "")) for k in ("conversaId", "numero", "criadoEm", "conteudo", "texto"))
     return hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()[:24]
+
+
+def message_reply_to_id(message: Dict[str, Any]) -> str:
+    for key in ("replyToMessageId", "reply_to_message_id", "mensagemRespondidaId", "mensagem_respondida_id"):
+        value = message.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    for key in ("mensagemRespondida", "mensagem_respondida", "replyTo", "reply_to"):
+        valor = message.get(key)
+        if isinstance(valor, dict):
+            for campo in ("messageId", "message_id", "id", "idMensagem"):
+                identificador = valor.get(campo)
+                if identificador is not None and str(identificador).strip():
+                    return str(identificador).strip()
+    return ""
+
+
+def message_reply_to_text(message: Dict[str, Any]) -> str:
+    for key in ("replyToText", "reply_to_text"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for key in ("mensagemRespondida", "mensagem_respondida", "replyTo", "reply_to"):
+        valor = message.get(key)
+        if isinstance(valor, dict):
+            for campo in ("conteudo", "texto", "text", "mensagem", "message", "body"):
+                texto = valor.get(campo)
+                if isinstance(texto, str) and texto.strip():
+                    return texto.strip()
+    return ""
 
 
 def message_text(message: Dict[str, Any]) -> str:
@@ -843,6 +875,7 @@ async def _enviar_midia_http(
     caption: str = "",
     file_name: Optional[str] = None,
     force_document: bool = False,
+    reply_to: Optional[str] = None,
 ) -> Dict[str, Any]:
     arquivo = Path(file_path)
     if not arquivo.exists() or not arquivo.is_file():
@@ -853,6 +886,8 @@ async def _enviar_midia_http(
     payload = {"numero": destination, "legenda": caption or ""}
     if force_document:
         payload["tipo"] = "documento"
+    if reply_to:
+        payload["replyToMessageId"] = str(reply_to)
 
     resp = await http_client.post(
         f"{base_url}/mensagens/midia",
@@ -1145,6 +1180,8 @@ class MyZapAdapter(BasePlatformAdapter):
             "source": source,
             "raw_message": msg,
             "message_id": msg_id,
+            "reply_to_message_id": message_reply_to_id(msg) or None,
+            "reply_to_text": message_reply_to_text(msg) or None,
             "media_urls": prepared_message["media_urls"],
             "media_types": prepared_message["media_types"],
             "timestamp": message_created_at(msg),
@@ -1155,6 +1192,8 @@ class MyZapAdapter(BasePlatformAdapter):
             event = MessageEvent(**dados_evento)
         except TypeError:
             dados_evento.pop("channel_context", None)
+            dados_evento.pop("reply_to_message_id", None)
+            dados_evento.pop("reply_to_text", None)
             event = MessageEvent(**dados_evento)
             if contexto_canal:
                 event.channel_context = contexto_canal
@@ -1217,6 +1256,8 @@ class MyZapAdapter(BasePlatformAdapter):
             logger.info("[myzap] suppressed operational home-channel notice for public widget destination")
             return SendResult(success=True, message_id="suppressed-home-channel-notice", raw_response={"suppressed": True})
         body = {"numero": destination, "texto": content[:MAX_MESSAGE_LENGTH]}
+        if reply_to:
+            body["replyToMessageId"] = str(reply_to)
         try:
             resp = await self._http_client.post(f"{self._base_url}/mensagens/texto", json=body, headers=_headers(self._api_key))
             if resp.status_code >= 300:
@@ -1262,6 +1303,7 @@ class MyZapAdapter(BasePlatformAdapter):
                 caption=caption or "",
                 file_name=file_name,
                 force_document=bool(kwargs.get("force_document")),
+                reply_to=reply_to,
             )
             if not resultado.get("success"):
                 return SendResult(success=False, error=resultado.get("error", "Erro ao enviar mídia"), raw_response=resultado.get("raw_response"))

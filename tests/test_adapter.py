@@ -369,7 +369,7 @@ def test_poll_once_dispatches_widget_inbound_with_replyable_chat_id(monkeypatch)
         a = MyZapAdapter(cfg)
         fake = FakeClient({
             "mensagens": [
-                {"id": 20, "direcao": "RECEBIDA", "conteudo": "Oi widget", "remoteJid": "widget_abc123def45678", "conversaId": 8, "criadoEm": "2026-05-31T12:00:00.000Z"},
+                {"id": 20, "messageId": "msg-20", "direcao": "RECEBIDA", "conteudo": "Oi widget", "remoteJid": "widget_abc123def45678", "conversaId": 8, "criadoEm": "2026-05-31T12:00:00.000Z", "replyToMessageId": "msg-19", "replyToText": "Mensagem anterior"},
             ]
         })
         a._http_client = fake
@@ -384,6 +384,8 @@ def test_poll_once_dispatches_widget_inbound_with_replyable_chat_id(monkeypatch)
         assert events[0].text == "Oi widget"
         assert events[0].source.chat_id == "widget_abc123def45678"
         assert events[0].source.user_id == "widget_abc123def45678"
+        assert events[0].reply_to_message_id == "msg-19"
+        assert events[0].reply_to_text == "Mensagem anterior"
 
     asyncio.run(run())
 
@@ -727,6 +729,24 @@ def test_send_posts_text(monkeypatch):
         assert result.success is True
         assert fake.posts[0]["url"] == "https://example.test/api/v1/mensagens/texto"
         assert fake.posts[0]["json"] == {"numero": "5562999990000", "texto": "Resposta"}
+
+    asyncio.run(run())
+
+
+def test_send_posts_text_as_reply(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        fake = FakeClient({})
+        a._http_client = fake
+        result = await a.send("+55 62 99999-0000", "Resposta citada", reply_to="msg-19")
+        assert result.success is True
+        assert fake.posts[0]["json"] == {
+            "numero": "5562999990000",
+            "texto": "Resposta citada",
+            "replyToMessageId": "msg-19",
+        }
 
     asyncio.run(run())
 

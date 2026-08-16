@@ -26,6 +26,9 @@ Campos aceitos por mensagem:
 - conversa: `conversaId`, `conversa_id`, `chatId` ou `remoteJid`.
 - data: `criadoEm`, `createdAt`, `timestamp`, `dataHora` ou `data`.
 - anexos: `arquivos`, `arquivosMensagem`, `attachments` ou `media`.
+- resposta: `replyToMessageId`, `reply_to_message_id` ou `mensagemRespondidaId`;
+  quando disponível, o texto citado pode vir em `replyToText` ou em
+  `mensagemRespondida.conteudo`.
 - anexo individual: `nome`, `fileName`, `filename`, `tipo`, `type`, `mimeType`, `mime_type`, `url`, `link` ou `downloadUrl`.
 
 Quando a mensagem vier sem texto, o adapter monta um resumo legível a partir
@@ -46,9 +49,14 @@ JSON:
 ```json
 {
   "numero": "5562999999999",
-  "texto": "Mensagem em texto puro"
+  "texto": "Mensagem em texto puro",
+  "replyToMessageId": "wamid.HBg..."
 }
 ```
+
+O campo `replyToMessageId` é opcional. Quando informado, o MyZap envia a
+mensagem como resposta à mensagem identificada e o Hermes recebe o vínculo em
+`MessageEvent.reply_to_message_id` e `MessageEvent.reply_to_text`.
 
 Header:
 
@@ -66,6 +74,7 @@ Multipart/form-data:
   do MyZap recebe uma mídia por chamada nesta rota.
 - `tipo`: opcional; use `documento` para forçar envio como documento quando
   aplicável.
+- `replyToMessageId`: opcional; identifica a mensagem que será citada.
 
 Exemplo:
 

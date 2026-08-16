@@ -164,6 +164,8 @@ Resumo:
 
 - Envio de mídia disponível pelo fluxo do agente via `send_document`/`send_image_file`/`send_voice`/`send_video`, usando `POST /mensagens/midia`.
 - Recebimento de mídia preenche `MessageEvent.media_urls` e `MessageEvent.media_types` quando o MyZap fornece URL do anexo.
+- Respostas citadas preservam `MessageEvent.reply_to_message_id` e
+  `MessageEvent.reply_to_text`; o envio de texto e mídia aceita `reply_to`.
 - Áudios recebidos são baixados para o cache local do Hermes e enviados ao gateway como `MessageType.VOICE`.
 - A transcrição é feita pelo pipeline central do Hermes, conforme a configuração `stt` do perfil.
 
