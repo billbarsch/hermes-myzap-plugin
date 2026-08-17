@@ -126,6 +126,29 @@ platforms:
 
 `MYZAP_API_KEY` deve ficar no `.env`, não no `config.yaml`.
 
+## Agrupamento de mensagens de texto
+
+O plugin aguarda mensagens curtas antes de encaminhá-las ao agente. Se a mesma
+pessoa enviar várias mensagens em sequência, o temporizador é reiniciado a cada
+mensagem e o conteúdo é entregue em um único evento, separado por quebras de
+linha. Isso evita respostas fragmentadas para sequências como “oi”, “bom dia” e
+“estou com uma dúvida”.
+
+Os padrões são:
+
+- `10` segundos após a última mensagem para textos com até `1.024` caracteres;
+- `15` segundos após a última mensagem para textos maiores;
+- mídias, como áudio, imagem, vídeo e documentos, continuam sendo encaminhadas
+  imediatamente para o pipeline do Hermes.
+
+O comportamento segue o padrão de agrupamento dos adaptadores oficiais do
+Hermes. Caso seja necessário ajustar uma instalação específica, use no `extra`
+do MyZap as chaves `text_batch_delay_seconds`,
+`text_batch_split_delay_seconds` e `text_batch_long_threshold`. Os mesmos dois
+atrasos também podem ser definidos pelas variáveis
+`MYZAP_TEXT_BATCH_DELAY_SECONDS` e `MYZAP_TEXT_BATCH_SPLIT_DELAY_SECONDS`.
+Definir o atraso aplicável como `0` desativa a espera para aquela faixa.
+
 ## Teste rápido sem credenciais reais
 
 Esse teste confirma apenas se o plugin consegue carregar e se as variáveis mínimas foram encontradas.

@@ -28,6 +28,10 @@ from hermes_myzap_plugin.adapter import (
 @pytest.fixture(autouse=True)
 def isolated_hermes_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    # Os testes legados de despacho esperam entrega imediata; os testes de
+    # agrupamento abaixo usam janelas curtas próprias para não esperar 10s.
+    monkeypatch.setenv("MYZAP_TEXT_BATCH_DELAY_SECONDS", "0")
+    monkeypatch.setenv("MYZAP_TEXT_BATCH_SPLIT_DELAY_SECONDS", "0")
     adapter_module._credenciais_mcp_por_sessao.clear()
 
 
@@ -425,6 +429,60 @@ def test_poll_once_dispatches_widget_inbound_with_external_identity(monkeypatch)
         assert texto_contexto_externo_widget(mensagem).startswith("Dados de identificação")
 
     asyncio.run(run())
+
+
+def test_agrupa_textos_da_mesma_sessao_e_reinicia_a_janela(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "base_url": "https://example.test/api/v1",
+                "api_key": "key",
+                "text_batch_delay_seconds": 0.03,
+                "text_batch_split_delay_seconds": 0.06,
+            },
+        )
+        adaptador = MyZapAdapter(cfg)
+        adaptador._http_client = FakeClient({})
+        eventos = []
+
+        async def capturar(evento):
+            eventos.append(evento)
+
+        adaptador.handle_message = capturar
+        mensagem_base = {
+            "direcao": "RECEBIDA",
+            "numero": "+55 62 99999-0000",
+            "conversaId": 7,
+            "criadoEm": "2026-05-31T12:00:00.000Z",
+        }
+        primeira = {**mensagem_base, "id": 30, "conteudo": "Oi"}
+        segunda = {**mensagem_base, "id": 31, "conteudo": "estou com uma dúvida"}
+
+        assert await adaptador._dispatch_if_relevant(primeira) is True
+        await asyncio.sleep(0.015)
+        assert await adaptador._dispatch_if_relevant(segunda) is True
+        assert eventos == []
+
+        await asyncio.sleep(0.04)
+        assert len(eventos) == 1
+        assert eventos[0].text == "Oi\nestou com uma dúvida"
+        assert eventos[0].message_id == "30"
+
+    asyncio.run(run())
+
+
+def test_usa_dez_e_quinze_segundos_por_padrao(monkeypatch):
+    monkeypatch.delenv("MYZAP_TEXT_BATCH_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("MYZAP_TEXT_BATCH_SPLIT_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("MYZAP_TEXT_BATCH_LONG_THRESHOLD", raising=False)
+    configuracao = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+    adaptador = MyZapAdapter(configuracao)
+
+    assert adaptador._atraso_agrupamento_texto_segundos == 10.0
+    assert adaptador._atraso_agrupamento_texto_longo_segundos == 15.0
+    assert adaptador._limite_texto_longo_agrupamento == 1024
 
 
 def test_widget_injeta_credencial_mcp_integra_na_ferramenta(monkeypatch):

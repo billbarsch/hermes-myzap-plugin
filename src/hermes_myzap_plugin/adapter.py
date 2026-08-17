@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import math
 import mimetypes
 import json
 import logging
@@ -148,6 +149,9 @@ RECONNECT_BACKOFF_SECONDS = (2, 5, 10, 30, 60)
 DEFAULT_REQUIRED_PROFILE = ""
 WIDGET_DESTINATION_RE = re.compile(r"^widget_[a-f0-9]{14}$")
 MAX_CREDENCIAIS_MCP_SESSAO = 5000
+ATRASO_AGRUPAMENTO_TEXTO_PADRAO_SEGUNDOS = 10.0
+ATRASO_AGRUPAMENTO_TEXTO_LONGO_PADRAO_SEGUNDOS = 15.0
+LIMITE_TEXTO_LONGO_AGRUPAMENTO = 1024
 
 _credenciais_mcp_por_sessao: "OrderedDict[str, Tuple[str, str, str]]" = OrderedDict()
 _credenciais_mcp_lock = threading.Lock()
@@ -181,6 +185,23 @@ def _env(name: str, default: str = "") -> str:
     except Exception:
         pass
     return os.getenv(name, default).strip()
+
+
+def ler_numero_configuracao(
+    extra: Dict[str, Any],
+    chave: str,
+    nome_variavel_ambiente: str,
+    valor_padrao: float,
+) -> float:
+    """Leia um número não negativo da configuração ou do ambiente."""
+    valor = extra.get(chave) if chave in extra else _env(nome_variavel_ambiente)
+    try:
+        numero = float(valor) if valor not in (None, "") else float(valor_padrao)
+    except (TypeError, ValueError):
+        return float(valor_padrao)
+    if not math.isfinite(numero) or numero < 0:
+        return float(valor_padrao)
+    return numero
 
 
 def _current_profile() -> str:
@@ -932,10 +953,30 @@ class MyZapAdapter(BasePlatformAdapter):
         self._http_client: Optional["httpx.AsyncClient"] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._seen: "OrderedDict[str, float]" = OrderedDict()
+        self._agrupamentos_texto: Dict[str, MessageEvent] = {}
+        self._tarefas_agrupamento_texto: Dict[str, asyncio.Task] = {}
         self._allowed_numbers = _parse_allowed(str(extra.get("allowed_numbers") or _env("MYZAP_ALLOWED_NUMBERS")))
         self._allow_all = bool(extra.get("allow_all_numbers")) or _truthy(_env("MYZAP_ALLOW_ALL_NUMBERS"))
         self._widget_context_allow = _parse_allowed(str(extra.get("widget_context_allow") or _env("MYZAP_WIDGET_CONTEXT_ALLOW")))
         self._widget_context_deny = _parse_allowed(str(extra.get("widget_context_deny") or _env("MYZAP_WIDGET_CONTEXT_DENY")))
+        self._atraso_agrupamento_texto_segundos = ler_numero_configuracao(
+            extra,
+            "text_batch_delay_seconds",
+            "MYZAP_TEXT_BATCH_DELAY_SECONDS",
+            ATRASO_AGRUPAMENTO_TEXTO_PADRAO_SEGUNDOS,
+        )
+        self._atraso_agrupamento_texto_longo_segundos = ler_numero_configuracao(
+            extra,
+            "text_batch_split_delay_seconds",
+            "MYZAP_TEXT_BATCH_SPLIT_DELAY_SECONDS",
+            ATRASO_AGRUPAMENTO_TEXTO_LONGO_PADRAO_SEGUNDOS,
+        )
+        self._limite_texto_longo_agrupamento = int(ler_numero_configuracao(
+            extra,
+            "text_batch_long_threshold",
+            "MYZAP_TEXT_BATCH_LONG_THRESHOLD",
+            LIMITE_TEXTO_LONGO_AGRUPAMENTO,
+        ))
         self._load_state()
 
     def _load_state(self) -> None:
@@ -1011,12 +1052,89 @@ class MyZapAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+        await self._aguardar_agrupamentos_texto()
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
         self._persist_state()
         self._seen.clear()
         logger.info("[myzap] disconnected")
+
+    def _evento_deve_ser_agrupado(self, evento: MessageEvent) -> bool:
+        """Agrupe somente texto puro; mídias seguem para o Hermes imediatamente."""
+        tipo = getattr(getattr(evento, "message_type", None), "value", getattr(evento, "message_type", ""))
+        return str(tipo).strip().lower() == "text" and not getattr(evento, "media_urls", None)
+
+    def _chave_agrupamento_texto(self, evento: MessageEvent) -> str:
+        """Gere a mesma chave de sessão usada pelo processamento do Hermes."""
+        return build_session_key(
+            evento.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
+    def _atraso_do_agrupamento_texto(self, chave: str) -> float:
+        evento = self._agrupamentos_texto.get(chave)
+        if evento is None:
+            return self._atraso_agrupamento_texto_segundos
+        tamanho_total = len(getattr(evento, "text", "") or "")
+        if tamanho_total >= self._limite_texto_longo_agrupamento:
+            return self._atraso_agrupamento_texto_longo_segundos
+        return self._atraso_agrupamento_texto_segundos
+
+    def _enfileirar_evento_texto(self, evento: MessageEvent) -> None:
+        """Acumule texto por sessão e reinicie a janela de silêncio."""
+        chave = self._chave_agrupamento_texto(evento)
+        existente = self._agrupamentos_texto.get(chave)
+        if existente is None:
+            self._agrupamentos_texto[chave] = evento
+        else:
+            if evento.text:
+                existente.text = f"{existente.text}\n{evento.text}" if existente.text else evento.text
+            if not getattr(existente, "reply_to_message_id", None) and getattr(evento, "reply_to_message_id", None):
+                existente.reply_to_message_id = evento.reply_to_message_id
+                existente.reply_to_text = getattr(evento, "reply_to_text", None)
+            if not getattr(existente, "channel_context", None) and getattr(evento, "channel_context", None):
+                existente.channel_context = evento.channel_context
+
+        tarefa_anterior = self._tarefas_agrupamento_texto.get(chave)
+        if tarefa_anterior and not tarefa_anterior.done():
+            tarefa_anterior.cancel()
+        self._tarefas_agrupamento_texto[chave] = asyncio.create_task(
+            self._liberar_agrupamento_texto(chave)
+        )
+
+    async def _liberar_agrupamento_texto(self, chave: str) -> None:
+        """Envie o lote ao Hermes depois da janela sem novas mensagens."""
+        tarefa_atual = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._atraso_do_agrupamento_texto(chave))
+            evento = self._agrupamentos_texto.pop(chave, None)
+            if evento is None:
+                return
+            logger.info(
+                "[myzap] liberando lote de texto: sessao=%s caracteres=%d",
+                chave,
+                len(evento.text or ""),
+            )
+            await self.handle_message(evento)
+        finally:
+            if self._tarefas_agrupamento_texto.get(chave) is tarefa_atual:
+                self._tarefas_agrupamento_texto.pop(chave, None)
+
+    async def _aguardar_agrupamentos_texto(self) -> None:
+        """Drene lotes pendentes antes de fechar o adaptador."""
+        tarefas = list(self._tarefas_agrupamento_texto.values())
+        if tarefas:
+            await asyncio.gather(*tarefas, return_exceptions=True)
+
+        # Se uma tarefa foi cancelada externamente, ainda encaminhe o que ficou
+        # na memória para não perder mensagens que já foram lidas da API.
+        pendentes = list(self._agrupamentos_texto.values())
+        self._agrupamentos_texto.clear()
+        self._tarefas_agrupamento_texto.clear()
+        for evento in pendentes:
+            await self.handle_message(evento)
 
     async def _poll_loop(self) -> None:
         backoff_idx = 0
@@ -1205,7 +1323,16 @@ class MyZapAdapter(BasePlatformAdapter):
                 len(event.media_urls),
                 event.media_types[0] if event.media_types else "",
             )
-        await self.handle_message(event)
+        if self._evento_deve_ser_agrupado(event):
+            atraso = self._atraso_agrupamento_texto_segundos
+            if len(event.text or "") >= self._limite_texto_longo_agrupamento:
+                atraso = self._atraso_agrupamento_texto_longo_segundos
+            if atraso <= 0:
+                await self.handle_message(event)
+            else:
+                self._enfileirar_evento_texto(event)
+        else:
+            await self.handle_message(event)
         return True
 
     def _number_allowed(self, number: str) -> bool:
