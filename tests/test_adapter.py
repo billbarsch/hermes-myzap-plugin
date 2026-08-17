@@ -15,6 +15,7 @@ from hermes_myzap_plugin.adapter import (
     is_public_operational_notice,
     is_widget_destination,
     injetar_credencial_mcp_widget,
+    link_conversa_widget_myzap,
     message_destination,
     message_attachments,
     message_text,
@@ -409,6 +410,8 @@ def test_poll_once_dispatches_widget_inbound_with_external_identity(monkeypatch)
             "usuarioExternoId": "api-token-usuario",
             "usuarioExternoNome": "Maria Cliente",
             "contextoExterno": {"sistema": "agilcontabil"},
+            "visitanteId": "agilcontabil:cliente-42",
+            "widgetPublicId": "widget_abc123def45678",
         }
         fake = FakeClient({"mensagens": [mensagem]})
         a._http_client = fake
@@ -426,7 +429,97 @@ def test_poll_once_dispatches_widget_inbound_with_external_identity(monkeypatch)
         assert events[0].source.user_name == "Maria Cliente"
         assert "usuarioExternoId: api-token-usuario" in events[0].channel_context
         assert "sistema: agilcontabil" in events[0].channel_context
+        assert "Link direto para esta conversa no MyZap:" in events[0].channel_context
+        assert "visitanteId=agilcontabil%3Acliente-42" in events[0].channel_context
         assert texto_contexto_externo_widget(mensagem).startswith("Dados de identificação")
+
+    asyncio.run(run())
+
+
+def test_link_conversa_widget_usa_public_id_e_visitante_id():
+    mensagem = {
+        "remoteJid": "widget_abc123def45678",
+        "widgetPublicId": "widget_abc123def45678",
+        "visitanteId": "geranet:cliente 42",
+    }
+
+    assert link_conversa_widget_myzap(mensagem) == (
+        "https://www.myzap.net/chat-widget?publicId=widget_abc123def45678"
+        "&visitanteId=geranet%3Acliente+42&apiUrl=https%3A%2F%2Fapi.myzap.net%2Fapi"
+    )
+
+
+def test_resposta_manual_de_operador_pausa_e_cancela_atendimento(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "base_url": "https://example.test/api/v1",
+                "api_key": "key",
+                "operator_pause_seconds": 0.05,
+            },
+        )
+        adaptador = MyZapAdapter(cfg)
+        adaptador._http_client = FakeClient({})
+        eventos = []
+        adaptador.handle_message = lambda evento: eventos.append(evento) or asyncio.sleep(0)
+
+        primeira = {
+            "id": 301,
+            "direcao": "RECEBIDA",
+            "conteudo": "Preciso de ajuda",
+            "remoteJid": "widget_abc123def45678",
+            "conversaId": 8,
+            "criadoEm": "2026-08-07T12:00:00.000Z",
+        }
+        operador = {
+            "id": 302,
+            "direcao": "ENVIADA",
+            "autor": "usuario",
+            "origem": "frontend",
+            "conteudo": "Vou assumir este atendimento",
+            "remoteJid": "widget_abc123def45678",
+            "conversaId": 8,
+            "criadoEm": "2026-08-07T12:00:01.000Z",
+        }
+        segunda = {**primeira, "id": 303, "conteudo": "Ainda estou aguardando"}
+
+        assert await adaptador._dispatch_if_relevant(primeira) is True
+        assert await adaptador._dispatch_if_relevant(operador) is False
+        assert await adaptador._dispatch_if_relevant(segunda) is False
+        assert len(eventos) == 1
+
+        await asyncio.sleep(0.06)
+        terceira = {**primeira, "id": 304, "conteudo": "Agora posso continuar?"}
+        assert await adaptador._dispatch_if_relevant(terceira) is True
+        assert len(eventos) == 2
+
+    asyncio.run(run())
+
+
+def test_eco_do_proprio_agente_nao_cria_pausa_de_operador(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        adaptador = MyZapAdapter(cfg)
+        fake = FakeClient({})
+        adaptador._http_client = fake
+
+        resultado = await adaptador.send("widget_abc123def45678", "Resposta do agente")
+        assert resultado.success is True
+        eco = {
+            "id": 305,
+            "messageId": resultado.message_id,
+            "direcao": "ENVIADA",
+            "autor": "usuario",
+            "origem": "frontend",
+            "conteudo": "Resposta do agente",
+            "remoteJid": "widget_abc123def45678",
+        }
+
+        assert await adaptador._dispatch_if_relevant(eco) is False
+        assert adaptador._pausas_operador == {}
 
     asyncio.run(run())
 

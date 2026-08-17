@@ -25,6 +25,9 @@ Campos aceitos por mensagem:
 - número: `numero`, `telefone`, `remoteJid`, `chatId`, `contato.numero` ou `conversa.numero`.
 - conversa: `conversaId`, `conversa_id`, `chatId` ou `remoteJid`.
 - data: `criadoEm`, `createdAt`, `timestamp`, `dataHora` ou `data`.
+- conversa de widget: `widgetPublicId` e `visitanteId`. Quando os dois campos
+  existirem, o plugin monta no contexto do canal o link persistente
+  `https://www.myzap.net/chat-widget` com esses parâmetros.
 - anexos: `arquivos`, `arquivosMensagem`, `attachments` ou `media`.
 - resposta: `replyToMessageId`, `reply_to_message_id` ou `mensagemRespondidaId`;
   quando disponível, o texto citado pode vir em `replyToText` ou em

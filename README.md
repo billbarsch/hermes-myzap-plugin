@@ -192,6 +192,14 @@ Resumo:
 - Áudios recebidos são baixados para o cache local do Hermes e enviados ao gateway como `MessageType.VOICE`.
 - A transcrição é feita pelo pipeline central do Hermes, conforme a configuração `stt` do perfil.
 
+## Escalonamento e pausa por operador
+
+- Mensagens recebidas de widgets carregam no `channel_context` o link direto da conversa quando a API fornece `widgetPublicId` e `visitanteId`.
+- O agente deve copiar esse link no resumo enviado ao superior pelo fluxo de escalonamento; o link abre a conversa correta no MyZap.
+- Uma mensagem manual enviada pelo painel do MyZap para um widget pausa o atendimento automático daquela conversa por 30 minutos. O intervalo pode ser alterado com `MYZAP_OPERATOR_PAUSE_SECONDS` ou `operator_pause_seconds`.
+- As mensagens enviadas pelo próprio Hermes são identificadas pelo `messageId` retornado pela API e não ativam a pausa. Mensagens recebidas durante a pausa continuam no histórico, mas não são encaminhadas ao agente.
+- A pausa é mantida em memória do adaptador e expira sozinha; o cursor incremental continua persistido para evitar reprocessamento após reinício.
+
 ## Limites atuais
 
 - Sem rota HTTP própria de webhook. O arquivo `adapter.py` inclui `verify_webhook_signature(...)` para um shim futuro validar HMAC antes de repassar eventos.
