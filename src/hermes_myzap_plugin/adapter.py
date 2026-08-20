@@ -152,9 +152,6 @@ MAX_CREDENCIAIS_MCP_SESSAO = 5000
 ATRASO_AGRUPAMENTO_TEXTO_PADRAO_SEGUNDOS = 10.0
 ATRASO_AGRUPAMENTO_TEXTO_LONGO_PADRAO_SEGUNDOS = 15.0
 LIMITE_TEXTO_LONGO_AGRUPAMENTO = 1024
-PAUSA_OPERADOR_PADRAO_SEGUNDOS = 30 * 60
-MAXIMO_PAUSAS_OPERADOR = 5000
-MAXIMO_MENSAGENS_ENVIADAS_PELO_AGENTE = 5000
 URL_CHAT_WIDGET_MYZAP = "https://www.myzap.net/chat-widget"
 URL_API_PUBLICA_MYZAP = "https://api.myzap.net/api"
 
@@ -1017,14 +1014,6 @@ class MyZapAdapter(BasePlatformAdapter):
             "MYZAP_TEXT_BATCH_LONG_THRESHOLD",
             LIMITE_TEXTO_LONGO_AGRUPAMENTO,
         ))
-        self._pausa_operador_segundos = ler_numero_configuracao(
-            extra,
-            "operator_pause_seconds",
-            "MYZAP_OPERATOR_PAUSE_SECONDS",
-            PAUSA_OPERADOR_PADRAO_SEGUNDOS,
-        )
-        self._pausas_operador: "OrderedDict[str, float]" = OrderedDict()
-        self._mensagens_enviadas_pelo_agente: "OrderedDict[str, float]" = OrderedDict()
         self._load_state()
 
     def _load_state(self) -> None:
@@ -1138,68 +1127,6 @@ class MyZapAdapter(BasePlatformAdapter):
             fonte,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
-
-    def _limpar_pausas_operador(self) -> None:
-        agora = time.time()
-        expiradas = [chave for chave, prazo in self._pausas_operador.items() if prazo <= agora]
-        for chave in expiradas:
-            self._pausas_operador.pop(chave, None)
-
-    def _pausa_operador_ativa(self, destino: str) -> bool:
-        if not is_widget_destination(destino):
-            return False
-        self._limpar_pausas_operador()
-        prazo = self._pausas_operador.get(destino)
-        return bool(prazo and prazo > time.time())
-
-    def _cancelar_agrupamento_da_mensagem(self, mensagem: Dict[str, Any]) -> None:
-        """Remova um lote pendente quando um operador assumir a conversa."""
-        chave = self._chave_sessao_mensagem(mensagem)
-        self._agrupamentos_texto.pop(chave, None)
-        tarefa = self._tarefas_agrupamento_texto.pop(chave, None)
-        if tarefa and not tarefa.done():
-            tarefa.cancel()
-
-    def _mensagem_e_resposta_de_operador(self, mensagem: Dict[str, Any]) -> bool:
-        destino = message_destination(mensagem)
-        if not is_widget_destination(destino):
-            return False
-
-        identificador = message_identity(mensagem)
-        if identificador in self._mensagens_enviadas_pelo_agente:
-            self._mensagens_enviadas_pelo_agente.pop(identificador, None)
-            return False
-
-        origem = str(mensagem.get("origem") or mensagem.get("source") or "").strip().lower()
-        autor = str(mensagem.get("autor") or mensagem.get("author") or "").strip().lower()
-        return origem in {"frontend", "manual", "operador", "usuario", "user"} or autor in {
-            "usuario", "user", "operador", "atendente", "agent",
-        }
-
-    def _registrar_mensagem_enviada_pelo_agente(self, destino: str, identificador: Optional[str]) -> None:
-        if not is_widget_destination(destino) or not identificador:
-            return
-        agora = time.time()
-        self._mensagens_enviadas_pelo_agente[identificador] = agora
-        while len(self._mensagens_enviadas_pelo_agente) > MAXIMO_MENSAGENS_ENVIADAS_PELO_AGENTE:
-            self._mensagens_enviadas_pelo_agente.popitem(last=False)
-
-    def _registrar_pausa_de_operador(self, mensagem: Dict[str, Any]) -> None:
-        destino = message_destination(mensagem)
-        if not is_widget_destination(destino):
-            return
-        self._limpar_pausas_operador()
-        prazo = time.time() + self._pausa_operador_segundos
-        self._pausas_operador[destino] = prazo
-        self._pausas_operador.move_to_end(destino)
-        while len(self._pausas_operador) > MAXIMO_PAUSAS_OPERADOR:
-            self._pausas_operador.popitem(last=False)
-        self._cancelar_agrupamento_da_mensagem(mensagem)
-        logger.info(
-            "[myzap] atendimento automático pausado por operador: destino=%s duração=%ss",
-            destino,
-            self._pausa_operador_segundos,
         )
 
     def _atraso_do_agrupamento_texto(self, chave: str) -> float:
@@ -1384,15 +1311,9 @@ class MyZapAdapter(BasePlatformAdapter):
         if self._is_duplicate(msg_id):
             return False
         if not is_inbound(msg):
-            if self._mensagem_e_resposta_de_operador(msg):
-                self._registrar_pausa_de_operador(msg)
-            else:
-                logger.debug("[myzap] skipping outbound/echo message %s", msg_id)
+            logger.debug("[myzap] skipping outbound/echo message %s", msg_id)
             return False
         destino = message_destination(msg)
-        if self._pausa_operador_ativa(destino):
-            logger.info("[myzap] skipping inbound message during operator pause: destination=%s", destino)
-            return False
         prepared_message = await self._prepare_inbound_message(msg)
         text = prepared_message["text"]
         if not text:
@@ -1523,7 +1444,6 @@ class MyZapAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}", raw_response=resp.text)
             data = resp.json()
             msg_id = str(data.get("messageId") or (data.get("mensagem") or {}).get("id") or data.get("id") or "") or None
-            self._registrar_mensagem_enviada_pelo_agente(destination, msg_id)
             return SendResult(success=True, message_id=msg_id, raw_response={"status_code": resp.status_code})
 
         except Exception as exc:
@@ -1566,9 +1486,7 @@ class MyZapAdapter(BasePlatformAdapter):
             )
             if not resultado.get("success"):
                 return SendResult(success=False, error=resultado.get("error", "Erro ao enviar mídia"), raw_response=resultado.get("raw_response"))
-            identificador = resultado.get("message_id")
-            self._registrar_mensagem_enviada_pelo_agente(destination, identificador)
-            return SendResult(success=True, message_id=identificador, raw_response=resultado.get("raw_response"))
+            return SendResult(success=True, message_id=resultado.get("message_id"), raw_response=resultado.get("raw_response"))
         except Exception as exc:
             logger.error("[myzap] send_document error: %s", exc)
             return SendResult(success=False, error=str(exc), retryable=True)

@@ -1,5 +1,5 @@
 name: myzap
-version: 0.3.0
+version: 0.4.0
 description: Hermes platform adapter for the MyZap WhatsApp API
 author: billbarsch
 kind: platform
