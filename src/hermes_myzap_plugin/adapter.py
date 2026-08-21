@@ -159,12 +159,6 @@ _credenciais_mcp_por_sessao: "OrderedDict[str, Tuple[str, str, str]]" = OrderedD
 _credenciais_mcp_lock = threading.Lock()
 HOME_CHANNEL_NOTICE_PREFIX = "no home channel is set for myzap"
 FILTERED_RUNTIME_STATUS_TERMS = (
-    "preflight compression",
-    "pre-api compression",
-    "compacting context",
-    "caps context at",
-    "auto-compaction was raised",
-    "compression.codex_",
     "gateway shutting down",
     "Skipping concurrent compression",
     "interrupting current task",
