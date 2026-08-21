@@ -813,7 +813,7 @@ def test_runtime_status_filter_blocks_only_known_runtime_noise_case_insensitive(
     assert is_filtered_runtime_status("gateway SHUTTING down") is True
     assert is_filtered_runtime_status("status: SKIPPING CONCURRENT COMPRESSION already running") is True
     assert is_filtered_runtime_status("Agent note: INTERRUPTING CURRENT TASK to reload context") is True
-    assert is_filtered_runtime_status("Self-improvement review: patched plugin successfully") is True
+    assert is_filtered_runtime_status("Self-improvement review: patched plugin successfully") is False
     assert is_filtered_runtime_status("Cliente perguntou sobre compactação de contexto") is False
     assert is_filtered_runtime_status("Resposta normal ao cliente") is False
 
@@ -882,17 +882,21 @@ def test_send_suppresses_filtered_runtime_status(monkeypatch):
         assert result.message_id == "suppressed-runtime-status"
         assert fake.posts == []
 
-        result = await a.send("+55 62 99999-0000", "Self-improvement review: patched plugin successfully")
-        assert result.success is True
-        assert result.message_id == "suppressed-runtime-status"
-        assert fake.posts == []
-
         result = await a.send("+55 62 99999-0000", "Resposta normal ao cliente")
         assert result.success is True
         assert result.message_id != "suppressed-runtime-status"
         assert len(fake.posts) == 1
         assert fake.posts[0]["url"] == "https://example.test/api/v1/mensagens/texto"
         assert fake.posts[0]["json"] == {"numero": "5562999990000", "texto": "Resposta normal ao cliente"}
+
+        result = await a.send("+55 62 99999-0000", "Self-improvement review: patched plugin successfully")
+        assert result.success is True
+        assert result.message_id != "suppressed-runtime-status"
+        assert len(fake.posts) == 2
+        assert fake.posts[1]["json"] == {
+            "numero": "5562999990000",
+            "texto": "Self-improvement review: patched plugin successfully",
+        }
 
     asyncio.run(run())
 
