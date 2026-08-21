@@ -849,7 +849,8 @@ def texto_contexto_externo_widget(message: Dict[str, Any]) -> str:
     usuario_nome = usuario_externo_nome(message)
     contexto = contexto_externo_widget(message)
     link_conversa = link_conversa_widget_myzap(message)
-    if not usuario_id and not usuario_nome and not contexto and not link_conversa:
+    anexos = message_attachments(message)
+    if not usuario_id and not usuario_nome and not contexto and not link_conversa and not anexos:
         return ""
 
     linhas = ["Dados de identificação enviados pelo site onde o chat está incorporado:"]
@@ -864,6 +865,17 @@ def texto_contexto_externo_widget(message: Dict[str, Any]) -> str:
         if valor is None or valor == "":
             continue
         linhas.append(f"{chave}: {limitar_texto_contexto(valor)}")
+    if anexos:
+        linhas.append("Anexos recebidos nesta mensagem:")
+        for indice, anexo in enumerate(anexos, start=1):
+            nome = limitar_texto_contexto(attachment_name(anexo), 300)
+            mime_type = limitar_texto_contexto(attachment_mime_type(anexo) or "application/octet-stream", 200)
+            url_publica = limitar_texto_contexto(attachment_url(anexo), 2000)
+            linhas.append(f"Anexo {indice}:")
+            linhas.append(f"nome: {nome}")
+            linhas.append(f"tipo MIME: {mime_type}")
+            if url_publica:
+                linhas.append(f"URL pública: {url_publica}")
     return "\n".join(linhas)
 
 

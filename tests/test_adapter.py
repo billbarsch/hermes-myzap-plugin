@@ -436,6 +436,45 @@ def test_poll_once_dispatches_widget_inbound_with_external_identity(monkeypatch)
     asyncio.run(run())
 
 
+def test_poll_once_expoe_metadados_e_url_publica_do_anexo_no_contexto(monkeypatch):
+    async def run():
+        monkeypatch.setenv("HERMES_PROFILE", "atendimento")
+        cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
+        a = MyZapAdapter(cfg)
+        mensagem = {
+            "id": 15,
+            "direcao": "RECEBIDA",
+            "conteudo": "Atualize o certificado",
+            "remoteJid": "widget_abc123def45678",
+            "conversaId": 8,
+            "criadoEm": "2026-05-31T12:00:00.000Z",
+            "arquivos": [
+                {
+                    "id": 504,
+                    "nome": "certificado.pfx",
+                    "tipo": "documento",
+                    "mimeType": "application/x-pkcs12",
+                    "url": "https://api.myzap.net/api/arquivos-publicos/token-teste",
+                }
+            ],
+        }
+        a._http_client = FakeClient({"mensagens": [mensagem]})
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        a.handle_message = capture
+        count = await a.poll_once()
+        assert count == 1
+        assert "Anexos recebidos nesta mensagem:" in events[0].channel_context
+        assert "nome: certificado.pfx" in events[0].channel_context
+        assert "tipo MIME: application/x-pkcs12" in events[0].channel_context
+        assert "URL pública: https://api.myzap.net/api/arquivos-publicos/token-teste" in events[0].channel_context
+
+    asyncio.run(run())
+
+
 def test_link_conversa_widget_usa_public_id_e_visitante_id():
     mensagem = {
         "remoteJid": "widget_abc123def45678",
