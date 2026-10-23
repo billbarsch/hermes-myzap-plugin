@@ -13,3 +13,5 @@ MEDIA:/caminho/absoluto/relatorio.xlsx" --json
 Substituir o exemplo pelo destino real da propria conversa. `-f` le um arquivo de texto; nao e uma opcao de upload binario.
 
 O identificador da mensagem tambem e lido do formato publico `dados.mensagem.id` da API v1, preservando os formatos antigos. Confirmar o anexo registrado no MyZap e sua disponibilidade antes de declarar entrega; sucesso HTTP nao comprova leitura pelo cliente.
+
+Depois que todos os uploads forem aceitos, o envio avulso retorna `media_delivered=true`, sinal previsto pelo Hermes para nao acrescentar o aviso incorreto de que a midia foi omitida. Uma falha de upload continua retornando erro, sem esse sinal. Para o comando avulso, mantenha uma legenda junto da linha `MEDIA:`; algumas versoes do Hermes rejeitam mensagens sem texto antes de chamar plugins.

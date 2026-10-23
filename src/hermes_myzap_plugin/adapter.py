@@ -1597,6 +1597,7 @@ async def _standalone_send(
                     resultado_final["media_sent"].append(postagem)
                     if not resultado_final.get("message_id"):
                         resultado_final["message_id"] = postagem.get("message_id")
+                resultado_final["media_delivered"] = True
                 return resultado_final
 
             resp = await client.post(

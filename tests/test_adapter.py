@@ -187,8 +187,25 @@ def test_envio_avulso_preserva_destino_widget_e_normaliza_apenas_telefone(monkey
     envio = cliente.posts[0]
     assert (envio["data"] if com_arquivo else envio["json"])["numero"] == esperado
     if com_arquivo:
+        assert resultado["media_delivered"] is True
         assert envio["files"]["arquivo"][0] == "relatorio.xlsx"
         assert envio["files"]["arquivo"][2] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        assert "media_delivered" not in resultado
+
+
+def test_envio_avulso_nao_confirma_midia_quando_upload_falha(monkeypatch):
+    cliente = ClienteEnvioAvulso({})
+    monkeypatch.setenv("MYZAP_API_KEY", "chave-de-teste")
+    monkeypatch.setattr(adapter_module.httpx, "AsyncClient", lambda **opcoes: cliente)
+    async def falhar_envio(*argumentos, **opcoes):
+        return {"success": False, "error": "HTTP 500 de teste"}
+    monkeypatch.setattr(adapter_module, "_enviar_midia_http", falhar_envio)
+    resultado = asyncio.run(adapter_module._standalone_send(
+        PlatformConfig(enabled=True), "widget_abc123def45678", "Relatorio", media_files=["relatorio.xlsx"],
+    ))
+    assert resultado["error"] == "HTTP 500 de teste"
+    assert "media_delivered" not in resultado
 
 
 def test_envio_avulso_rejeita_widget_invalido_sem_chamar_api(monkeypatch):
