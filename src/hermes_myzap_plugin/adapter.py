@@ -843,7 +843,13 @@ def texto_contexto_externo_widget(message: Dict[str, Any]) -> str:
     contexto = contexto_externo_widget(message)
     link_conversa = link_conversa_widget_myzap(message)
     anexos = message_attachments(message)
-    if not usuario_id and not usuario_nome and not contexto and not link_conversa and not anexos:
+    referencias = {}
+    if is_widget_destination(message_destination(message)):
+        for campo, valor in [("myzap_conversa_id", message.get("conversaId")), ("myzap_mensagem_id", message.get("id"))]:
+            identificador = str(valor or "")
+            if re.fullmatch(r"[1-9][0-9]{0,9}", identificador) and int(identificador) <= 2147483647:
+                referencias[campo] = identificador
+    if not usuario_id and not usuario_nome and not contexto and not link_conversa and not anexos and not referencias:
         return ""
 
     linhas = ["Dados de identificação enviados pelo site onde o chat está incorporado:"]
@@ -854,10 +860,15 @@ def texto_contexto_externo_widget(message: Dict[str, Any]) -> str:
     if link_conversa:
         linhas.append(f"Link direto para esta conversa no MyZap: {link_conversa}")
     for chave in sorted(contexto.keys()):
+        if chave in {"myzap_conversa_id", "myzap_mensagem_id"}:
+            continue
         valor = contexto.get(chave)
         if valor is None or valor == "":
             continue
         linhas.append(f"{chave}: {limitar_texto_contexto(valor)}")
+    if referencias:
+        linhas.append("Referencias da propria conversa fornecidas pela API MyZap; nao autenticam o ERP:")
+        linhas.extend(f"{campo}: {valor}" for campo, valor in referencias.items())
     if anexos:
         linhas.append("Anexos recebidos nesta mensagem:")
         for indice, anexo in enumerate(anexos, start=1):
@@ -1383,6 +1394,8 @@ class MyZapAdapter(BasePlatformAdapter):
             dados_evento.pop("reply_to_message_id", None)
             dados_evento.pop("reply_to_text", None)
             event = MessageEvent(**dados_evento)
+            event.reply_to_message_id = message_reply_to_id(msg) or None
+            event.reply_to_text = message_reply_to_text(msg) or None
             if contexto_canal:
                 event.channel_context = contexto_canal
         if event.media_urls:

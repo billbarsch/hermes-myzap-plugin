@@ -507,9 +507,34 @@ def test_poll_once_dispatches_widget_inbound_with_external_identity(monkeypatch)
         assert "sistema: agilcontabil" in events[0].channel_context
         assert "Link direto para esta conversa no MyZap:" in events[0].channel_context
         assert "visitanteId=agilcontabil%3Acliente-42" in events[0].channel_context
+        assert "myzap_conversa_id: 8" in events[0].channel_context
+        assert "myzap_mensagem_id: 23" in events[0].channel_context
         assert texto_contexto_externo_widget(mensagem).startswith("Dados de identificação")
 
     asyncio.run(run())
+
+
+def test_referencias_do_widget_vem_da_api_e_nao_do_contexto_externo():
+    mensagem = {
+        "id": 23, "conversaId": 8, "remoteJid": "widget_abc123def45678",
+        "contextoExterno": {"myzap_conversa_id": "999", "myzap_mensagem_id": "888"},
+    }
+    contexto = texto_contexto_externo_widget(mensagem)
+    assert contexto.count("myzap_conversa_id:") == 1
+    assert contexto.count("myzap_mensagem_id:") == 1
+    assert "myzap_conversa_id: 8" in contexto
+    assert "myzap_mensagem_id: 23" in contexto
+    assert "nao autenticam o ERP" in contexto
+
+
+@pytest.mark.parametrize("identificador", ["8; executar", "8\n999", "-1", 0, True, "2147483648", "999999999999999999999"])
+def test_referencias_invalidas_nao_entram_no_contexto_do_widget(identificador):
+    contexto = texto_contexto_externo_widget({
+        "id": identificador, "conversaId": identificador, "remoteJid": "widget_abc123def45678",
+        "usuarioExternoNome": "Cliente",
+    })
+    assert "myzap_conversa_id:" not in contexto
+    assert "myzap_mensagem_id:" not in contexto
 
 
 def test_poll_once_expoe_metadados_e_url_publica_do_anexo_no_contexto(monkeypatch):
