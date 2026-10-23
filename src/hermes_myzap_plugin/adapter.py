@@ -928,6 +928,19 @@ def is_connected(config: PlatformConfig) -> bool:
     return validate_config(config)
 
 
+def identificador_mensagem_enviada(resposta: Dict[str, Any]) -> Optional[str]:
+    dados = resposta.get("dados") if isinstance(resposta.get("dados"), dict) else {}
+    mensagem = dados.get("mensagem") if isinstance(dados.get("mensagem"), dict) else {}
+    identificador = (
+        resposta.get("messageId")
+        or (resposta.get("mensagem") or {}).get("id")
+        or resposta.get("id")
+        or mensagem.get("id")
+        or mensagem.get("messageId")
+    )
+    return str(identificador) if identificador is not None else None
+
+
 async def _enviar_midia_http(
     http_client,
     *,
@@ -970,7 +983,7 @@ async def _enviar_midia_http(
     except Exception:
         data = {"raw": resp.text}
 
-    msg_id = str(data.get("messageId") or (data.get("mensagem") or {}).get("id") or data.get("id") or "") or None
+    msg_id = identificador_mensagem_enviada(data)
     return {
         "success": True,
         "message_id": msg_id,
@@ -1448,7 +1461,7 @@ class MyZapAdapter(BasePlatformAdapter):
                 logger.warning("[myzap] send failed HTTP %s: %s", resp.status_code, resp.text[:200])
                 return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}", raw_response=resp.text)
             data = resp.json()
-            msg_id = str(data.get("messageId") or (data.get("mensagem") or {}).get("id") or data.get("id") or "") or None
+            msg_id = identificador_mensagem_enviada(data)
             return SendResult(success=True, message_id=msg_id, raw_response={"status_code": resp.status_code})
 
         except Exception as exc:
@@ -1554,7 +1567,13 @@ async def _standalone_send(
     api_key = _api_key_from(extra)
     if not api_key:
         return {"error": "myzap standalone send: MYZAP_API_KEY not configured"}
-    number = normalize_number(chat_id or _env("MYZAP_HOME_NUMBER"))
+    destino_informado = str(chat_id or _env("MYZAP_HOME_NUMBER") or "").strip()
+    if is_widget_destination(destino_informado):
+        number = destino_informado
+    elif destino_informado.startswith("widget_"):
+        return {"error": "invalid MyZap widget destination"}
+    else:
+        number = normalize_number(destino_informado)
     if not number:
         return {"error": "myzap standalone send: destination number missing"}
     base_url = _base_url_from(extra)
@@ -1592,7 +1611,7 @@ async def _standalone_send(
                 "success": True,
                 "platform": "myzap",
                 "chat_id": number,
-                "message_id": str(data.get("messageId") or (data.get("mensagem") or {}).get("id") or data.get("id") or ""),
+                "message_id": identificador_mensagem_enviada(data) or "",
             }
     except Exception as exc:
         return {"error": f"myzap standalone send failed: {exc}"}

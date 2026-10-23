@@ -153,6 +153,65 @@ class SequenceClient(FakeClient):
         return self.responses.pop(0)
 
 
+class ClienteEnvioAvulso(FakeClient):
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *argumentos):
+        return False
+
+    async def post(self, *argumentos, **opcoes):
+        await super().post(*argumentos, **opcoes)
+        return FakeResponse(status_code=201, payload={"sucesso": True, "dados": {"mensagem": {"id": 124}}})
+
+
+@pytest.mark.parametrize("destino, esperado", [
+    ("widget_abc123def45678", "widget_abc123def45678"),
+    ("+55 (62) 99999-0000", "5562999990000"),
+])
+@pytest.mark.parametrize("com_arquivo", [False, True])
+def test_envio_avulso_preserva_destino_widget_e_normaliza_apenas_telefone(monkeypatch, tmp_path, destino, esperado, com_arquivo):
+    cliente = ClienteEnvioAvulso({})
+    monkeypatch.setenv("MYZAP_API_KEY", "chave-de-teste")
+    monkeypatch.setattr(adapter_module.httpx, "AsyncClient", lambda **opcoes: cliente)
+    arquivo = tmp_path / "relatorio.xlsx"
+    arquivo.write_bytes(b"conteudo-de-teste")
+    configuracao = PlatformConfig(enabled=True, extra={"base_url": "https://myzap.test/api/v1"})
+    resultado = asyncio.run(adapter_module._standalone_send(
+        configuracao, destino, "Relatorio solicitado", media_files=[str(arquivo)] if com_arquivo else None,
+    ))
+    assert resultado["success"] is True
+    assert resultado["chat_id"] == esperado
+    assert resultado["message_id"] == "124"
+    assert len(cliente.posts) == 1
+    envio = cliente.posts[0]
+    assert (envio["data"] if com_arquivo else envio["json"])["numero"] == esperado
+    if com_arquivo:
+        assert envio["files"]["arquivo"][0] == "relatorio.xlsx"
+        assert envio["files"]["arquivo"][2] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def test_envio_avulso_rejeita_widget_invalido_sem_chamar_api(monkeypatch):
+    monkeypatch.setenv("MYZAP_API_KEY", "chave-de-teste")
+    def criar_cliente(**opcoes):
+        raise AssertionError("Destino invalido nao deve criar cliente HTTP")
+    monkeypatch.setattr(adapter_module.httpx, "AsyncClient", criar_cliente)
+    resultado = asyncio.run(adapter_module._standalone_send(PlatformConfig(enabled=True), "widget_abc123", "Texto"))
+    assert resultado["error"] == "invalid MyZap widget destination"
+
+
+@pytest.mark.parametrize("resposta, esperado", [
+    ({"messageId": "antigo"}, "antigo"),
+    ({"mensagem": {"id": 12}}, "12"),
+    ({"id": 13}, "13"),
+    ({"dados": {"mensagem": {"id": 14, "messageId": "widget-agent:14"}}}, "14"),
+    ({"dados": {"mensagem": {"messageId": "widget-agent:15"}}}, "widget-agent:15"),
+    ({"sucesso": True}, None),
+])
+def test_identificador_envio_aceita_resposta_v1_e_preserva_formatos_anteriores(resposta, esperado):
+    assert adapter_module.identificador_mensagem_enviada(resposta) == esperado
+
+
 def test_poll_state_survives_restart_and_blocks_replay(monkeypatch, tmp_path):
     async def run():
         monkeypatch.setenv("HERMES_PROFILE", "atendimento")
