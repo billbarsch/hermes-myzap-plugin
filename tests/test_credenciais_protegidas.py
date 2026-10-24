@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from hermes_myzap_plugin import adapter as adaptador
@@ -78,3 +80,49 @@ def test_redigir_credencial_antes_de_limitar_texto():
     contexto = adaptador.texto_contexto_externo_widget(mensagem)
     assert credencial not in contexto
     assert 'a' * 1990 + 'credencial' not in contexto
+
+
+@pytest.mark.parametrize('servidor', ['geranet_petshop', 'geranet_recorrencia'])
+def test_fixar_empresa_e_unidade_do_contexto_sem_aceitar_outros_parametros(servidor):
+    mensagem = criar_mensagem(servidor, 'credencial-ficticia-do-usuario')
+    mensagem['contextoExterno'][f'mcp_{servidor}_parametros_contexto'] = {
+        'empresa_codigo': 'EMPRESA-17', 'unidade_codigo': 'UNIDADE-23', 'administrador': True, 'caminho': '/api/admin',
+    }
+    adaptador.registrar_credencial_mcp_sessao('sessao-empresa', mensagem)
+    argumentos = {'empresa_codigo': 'EMPRESA-INDEVIDA', 'unidade_codigo': 'UNIDADE-INDEVIDA', 'consulta': {'empresa_codigo': 'EMPRESA-INDEVIDA'}, 'dados': {'empresa_codigo': 'EMPRESA-INDEVIDA', 'nome': 'Cadastro'}}
+    resultado = adaptador.injetar_credencial_mcp_widget(tool_name=f'mcp__{servidor}__consultar', args=argumentos, session_id='sessao-empresa')['args']
+    assert resultado['empresa_codigo'] == 'EMPRESA-17'
+    assert resultado['unidade_codigo'] == 'UNIDADE-23'
+    assert resultado['consulta']['empresa_codigo'] == 'EMPRESA-17'
+    assert resultado['dados']['empresa_codigo'] == 'EMPRESA-17'
+    assert resultado['dados']['nome'] == 'Cadastro'
+    assert 'administrador' not in resultado
+    assert 'caminho' not in resultado
+    assert argumentos['consulta']['empresa_codigo'] == 'EMPRESA-INDEVIDA'
+
+
+def test_atualizar_escopo_e_revogar_alias_interno_apos_troca_de_contexto(monkeypatch, tmp_path):
+    registros = tmp_path / 'sessoes.json'
+    registros.write_text(json.dumps({'sessao-logica': {'session_id': 'identificador-interno'}}), encoding='utf-8')
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: registros)
+    mensagem = criar_mensagem('geranet_recorrencia', 'credencial-ficticia-do-usuario')
+    mensagem['contextoExterno']['mcp_geranet_recorrencia_parametros_contexto'] = {'empresa_codigo': 'EMPRESA-17'}
+    adaptador.registrar_credencial_mcp_sessao('sessao-logica', mensagem)
+    primeira = adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_recorrencia__listar', session_id='identificador-interno')['args']
+    assert primeira['empresa_codigo'] == 'EMPRESA-17'
+    mensagem['contextoExterno']['mcp_geranet_recorrencia_parametros_contexto'] = {'empresa_codigo': 'EMPRESA-28'}
+    adaptador.registrar_credencial_mcp_sessao('sessao-logica', mensagem)
+    segunda = adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_recorrencia__listar', session_id='identificador-interno')['args']
+    assert segunda['empresa_codigo'] == 'EMPRESA-28'
+    adaptador.registrar_credencial_mcp_sessao('sessao-logica', {'contextoExterno': {'origem': 'landing_publica'}})
+    assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_recorrencia__listar', session_id='identificador-interno') is None
+
+
+def test_isolar_empresas_entre_sessoes_do_mesmo_usuario():
+    for sessao, empresa in [('sessao-empresa-a', 'EMPRESA-A'), ('sessao-empresa-b', 'EMPRESA-B')]:
+        mensagem = criar_mensagem('geranet_petshop', 'mesma-credencial-ficticia')
+        mensagem['contextoExterno']['mcp_geranet_petshop_parametros_contexto'] = {'empresa_codigo': empresa}
+        adaptador.registrar_credencial_mcp_sessao(sessao, mensagem)
+    for sessao, empresa in [('sessao-empresa-b', 'EMPRESA-B'), ('sessao-empresa-a', 'EMPRESA-A')]:
+        resultado = adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_petshop__listar', session_id=sessao)['args']
+        assert resultado['empresa_codigo'] == empresa

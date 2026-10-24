@@ -23,6 +23,8 @@ Status: v0.2, instalável/testável localmente, sem credenciais no repositório.
 
 Quando o contexto do widget informa `mcp_preferido` e `mcp_<servidor>_parametro_credencial`, o conector guarda a credencial apenas no contexto interno da sessão e a injeta no parâmetro configurado das ferramentas daquele servidor MCP. A chave recebida em `usuarioExternoId` e suas cópias no contexto são ocultadas do texto entregue ao modelo. Uma chamada não utiliza a credencial de outra sessão nem de outro servidor; os perfis leem somente seu próprio ambiente Hermes. O formato legado sem esses campos continua compatível.
 
+Projetos com seleção de empresa ou unidade podem informar `mcp_<servidor>_parametros_contexto`. Somente `empresa_codigo` e `unidade_codigo` são aceitos; esses valores substituem parâmetros conflitantes do modelo. A API do projeto continua responsável por validar as permissões. Mudanças do contexto atualizam também o identificador interno da sessão; retornar a um contexto anônimo remove sua credencial anterior.
+
 ## Requisitos
 
 - Hermes Agent com suporte a plugins de plataforma.

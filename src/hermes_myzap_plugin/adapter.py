@@ -155,7 +155,7 @@ LIMITE_TEXTO_LONGO_AGRUPAMENTO = 1024
 URL_CHAT_WIDGET_MYZAP = "https://www.myzap.net/chat-widget"
 URL_API_PUBLICA_MYZAP = "https://api.myzap.net/api"
 
-_credenciais_mcp_por_sessao: "OrderedDict[str, Tuple[str, str, str]]" = OrderedDict()
+_credenciais_mcp_por_sessao: "OrderedDict[str, Tuple[Any, ...]]" = OrderedDict()
 _credenciais_mcp_lock = threading.Lock()
 HOME_CHANNEL_NOTICE_PREFIX = "no home channel is set for myzap"
 FILTERED_RUNTIME_STATUS_TERMS = (
@@ -781,10 +781,27 @@ def configuracao_credencial_mcp_widget(message: Dict[str, Any]) -> Optional[Tupl
 
 def registrar_credencial_mcp_sessao(chave_sessao: str, message: Dict[str, Any]) -> None:
     configuracao = configuracao_credencial_mcp_widget(message)
-    if not chave_sessao or configuracao is None:
+    if not chave_sessao:
         return
 
     with _credenciais_mcp_lock:
+        anterior = _credenciais_mcp_por_sessao.get(chave_sessao)
+        if anterior is not None:
+            for identificador, valor in list(_credenciais_mcp_por_sessao.items()):
+                if valor is anterior:
+                    del _credenciais_mcp_por_sessao[identificador]
+        if configuracao is None:
+            return
+        contexto = contexto_externo_widget(message)
+        servidor = configuracao[0]
+        parametros_recebidos = contexto.get(f"mcp_{servidor}_parametros_contexto")
+        parametros_contexto = {}
+        if isinstance(parametros_recebidos, dict):
+            for nome in ("empresa_codigo", "unidade_codigo"):
+                valor = parametros_recebidos.get(nome)
+                if isinstance(valor, (str, int)) and not isinstance(valor, bool) and 0 < len(str(valor).strip()) <= 255:
+                    parametros_contexto[nome] = str(valor).strip()
+        configuracao = (*configuracao, parametros_contexto)
         _credenciais_mcp_por_sessao[chave_sessao] = configuracao
         _credenciais_mcp_por_sessao.move_to_end(chave_sessao)
         while len(_credenciais_mcp_por_sessao) > MAX_CREDENCIAIS_MCP_SESSAO:
@@ -848,12 +865,20 @@ def injetar_credencial_mcp_widget(
     if configuracao is None:
         return None
 
-    servidor, parametro, credencial = configuracao
+    servidor, parametro, credencial = configuracao[:3]
     if not str(tool_name or "").startswith(f"mcp__{servidor}__"):
         return None
 
     argumentos = dict(args or {})
     argumentos[parametro] = credencial
+    parametros_contexto = configuracao[3] if len(configuracao) > 3 else {}
+    argumentos.update(parametros_contexto)
+    for nome in ("consulta", "dados"):
+        if isinstance(argumentos.get(nome), dict):
+            argumentos[nome] = dict(argumentos[nome])
+            for campo, valor in parametros_contexto.items():
+                if campo in argumentos[nome]:
+                    argumentos[nome][campo] = valor
     return {
         "args": argumentos,
         "middleware": "myzap_credencial_mcp_sessao",
