@@ -171,15 +171,38 @@ def _truthy(value: str | None) -> bool:
 
 
 def _env(name: str, default: str = "") -> str:
+    if name == "HERMES_HOME":
+        try:
+            from hermes_constants import get_hermes_home
+
+            return str(get_hermes_home())
+        except ImportError:
+            pass
     try:
         from hermes_cli.config import get_env_value
-
+    except ImportError:
+        return os.getenv(name, default).strip()
+    try:
+        from agent.secret_scope import (
+            build_profile_secret_scope, current_secret_scope, is_multiplex_active,
+            reset_secret_scope, set_secret_scope,
+        )
+        from hermes_constants import get_hermes_home
+    except ImportError:
         value = get_env_value(name)
-        if value is not None:
-            return str(value).strip()
-    except Exception:
-        pass
-    return os.getenv(name, default).strip()
+    else:
+        if is_multiplex_active() and current_secret_scope() is None:
+            diretorio_perfil = get_hermes_home()
+            identificador_escopo = set_secret_scope(
+                build_profile_secret_scope(diretorio_perfil), profile_home=str(diretorio_perfil)
+            )
+            try:
+                value = get_env_value(name)
+            finally:
+                reset_secret_scope(identificador_escopo)
+        else:
+            value = get_env_value(name)
+    return default if value is None else str(value).strip()
 
 
 def ler_numero_configuracao(
@@ -774,7 +797,7 @@ def caminho_registro_sessoes_hermes() -> Path:
 
         raiz_hermes = Path(get_hermes_home())
     except Exception:
-        raiz_hermes = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+        raiz_hermes = Path(_env("HERMES_HOME") or (Path.home() / ".hermes"))
 
     return raiz_hermes / "sessions" / "sessions.json"
 
@@ -841,6 +864,16 @@ def texto_contexto_externo_widget(message: Dict[str, Any]) -> str:
     usuario_id = usuario_externo_id(message)
     usuario_nome = usuario_externo_nome(message)
     contexto = contexto_externo_widget(message)
+    configuracao_credencial = configuracao_credencial_mcp_widget(message)
+    credencial_protegida = configuracao_credencial[2] if configuracao_credencial else ""
+    aviso_credencial = "[credencial protegida; injeção automática por sessão]"
+
+    def texto_protegido(valor: Any, limite: int = 2000) -> str:
+        texto = json.dumps(valor, ensure_ascii=False, default=str) if isinstance(valor, (dict, list)) else str(valor or "")
+        if credencial_protegida:
+            texto = texto.replace(credencial_protegida, aviso_credencial)
+        return limitar_texto_contexto(texto, limite)
+
     link_conversa = link_conversa_widget_myzap(message)
     anexos = message_attachments(message)
     referencias = {}
@@ -854,18 +887,18 @@ def texto_contexto_externo_widget(message: Dict[str, Any]) -> str:
 
     linhas = ["Dados de identificação enviados pelo site onde o chat está incorporado:"]
     if usuario_id:
-        linhas.append(f"usuarioExternoId: {limitar_texto_contexto(usuario_id)}")
+        linhas.append(f"usuarioExternoId: {aviso_credencial if credencial_protegida else limitar_texto_contexto(usuario_id)}")
     if usuario_nome:
-        linhas.append(f"usuarioExternoNome: {limitar_texto_contexto(usuario_nome, 300)}")
+        linhas.append(f"usuarioExternoNome: {texto_protegido(usuario_nome, 300)}")
     if link_conversa:
-        linhas.append(f"Link direto para esta conversa no MyZap: {link_conversa}")
+        linhas.append(f"Link direto para esta conversa no MyZap: {texto_protegido(link_conversa)}")
     for chave in sorted(contexto.keys()):
         if chave in {"myzap_conversa_id", "myzap_mensagem_id"}:
             continue
         valor = contexto.get(chave)
         if valor is None or valor == "":
             continue
-        linhas.append(f"{chave}: {limitar_texto_contexto(valor)}")
+        linhas.append(f"{chave}: {texto_protegido(valor)}")
     if referencias:
         linhas.append("Referencias da propria conversa fornecidas pela API MyZap; nao autenticam o ERP:")
         linhas.extend(f"{campo}: {valor}" for campo, valor in referencias.items())

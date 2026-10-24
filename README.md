@@ -19,6 +19,10 @@ Status: v0.2, instalável/testável localmente, sem credenciais no repositório.
 - Usa allowlist do Hermes (`MYZAP_ALLOWED_USERS`/`MYZAP_ALLOW_ALL_USERS`) e allowlist opcional do adapter (`MYZAP_ALLOWED_NUMBERS`).
 - Pode ser restringido a um perfil Hermes específico com `MYZAP_HERMES_PROFILE`, mas por padrão aceita qualquer perfil em que for instalado/configurado.
 
+## Credencial por atendimento
+
+Quando o contexto do widget informa `mcp_preferido` e `mcp_<servidor>_parametro_credencial`, o conector guarda a credencial apenas no contexto interno da sessão e a injeta no parâmetro configurado das ferramentas daquele servidor MCP. A chave recebida em `usuarioExternoId` e suas cópias no contexto são ocultadas do texto entregue ao modelo. Uma chamada não utiliza a credencial de outra sessão nem de outro servidor; os perfis leem somente seu próprio ambiente Hermes. O formato legado sem esses campos continua compatível.
+
 ## Requisitos
 
 - Hermes Agent com suporte a plugins de plataforma.
