@@ -1,4 +1,5 @@
 import json
+import logging
 import sqlite3
 
 import pytest
@@ -92,6 +93,9 @@ def test_injetar_por_sessao_viva_do_gateway_sqlite_sem_espelho_legado(tmp_path, 
         assert resultado['args']['chave_api'] == credencial
     for interna in ['interna-encerrada', 'interna-sem-contexto', 'interna-inexistente']:
         assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_joias__clientes_salvar', session_id=interna) is None
+    with sqlite3.connect(banco) as conexao:
+        conexao.execute('UPDATE sessions SET ended_at=1234 WHERE id=?', ('interna-primeira',))
+    assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_joias__clientes_salvar', session_id='interna-primeira') is None
     assert not (tmp_path / 'sessions/sessions.json').exists()
 
 
@@ -105,6 +109,17 @@ def test_sqlite_atual_nao_usa_mapa_legado_quando_sessao_foi_encerrada(tmp_path, 
     monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: registro)
     adaptador.registrar_credencial_mcp_sessao('logica', criar_mensagem('geranet_joias', 'credencial-encerrada'))
     assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_joias__listar', session_id='interna') is None
+
+
+def test_diagnostico_opcional_nao_registra_credencial_nem_argumentos(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(adaptador, '__file__', str(tmp_path / 'adapter.py'))
+    (tmp_path / 'diagnostico-mcp.ativo').touch()
+    caplog.set_level(logging.INFO, logger=adaptador.logger.name)
+    credencial = 'credencial-ficticia-protegida-no-diagnostico'
+    adaptador.registrar_credencial_mcp_sessao('logica-diagnostico', criar_mensagem('geranet_joias', credencial))
+    adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_joias__listar', args={'dado_privado': 'nao-registar-argumento'}, session_id='logica-diagnostico')
+    assert 'MCP contexto' in caplog.text and 'MCP middleware' in caplog.text
+    assert credencial not in caplog.text and 'nao-registar-argumento' not in caplog.text
 
 
 def test_redigir_credencial_antes_de_limitar_texto():

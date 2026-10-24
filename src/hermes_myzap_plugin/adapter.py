@@ -807,6 +807,8 @@ def registrar_credencial_mcp_sessao(chave_sessao: str, message: Dict[str, Any]) 
         _credenciais_mcp_por_sessao.move_to_end(chave_sessao)
         while len(_credenciais_mcp_por_sessao) > MAX_CREDENCIAIS_MCP_SESSAO:
             _credenciais_mcp_por_sessao.popitem(last=False)
+    if Path(__file__).with_name("diagnostico-mcp.ativo").is_file():
+        logger.info("[myzap] MCP contexto: sessao=%s servidor=%s modulo=%s", hashlib.sha256(chave_sessao.encode()).hexdigest()[:12], servidor, __name__)
 
 
 def caminho_registro_sessoes_hermes() -> Path:
@@ -871,16 +873,14 @@ def injetar_credencial_mcp_widget(
     with _credenciais_mcp_lock:
         configuracao = _credenciais_mcp_por_sessao.get(session_id)
 
+    chave_sessao = ""
     if configuracao is None:
         chave_sessao = chave_sessao_logica_por_id_interno(session_id)
         if chave_sessao:
             with _credenciais_mcp_lock:
                 configuracao = _credenciais_mcp_por_sessao.get(chave_sessao)
-                if configuracao is not None:
-                    _credenciais_mcp_por_sessao[session_id] = configuracao
-                    _credenciais_mcp_por_sessao.move_to_end(session_id)
-                    while len(_credenciais_mcp_por_sessao) > MAX_CREDENCIAIS_MCP_SESSAO:
-                        _credenciais_mcp_por_sessao.popitem(last=False)
+    if str(tool_name or "").startswith("mcp__") and Path(__file__).with_name("diagnostico-mcp.ativo").is_file():
+        logger.info("[myzap] MCP middleware: sessao=%s registro=%s contexto=%s home=%s modulo=%s", hashlib.sha256(session_id.encode()).hexdigest()[:12], hashlib.sha256(chave_sessao.encode()).hexdigest()[:12] if chave_sessao else "ausente", configuracao is not None, caminho_registro_sessoes_hermes().parent.parent, __name__)
 
     if configuracao is None:
         return None
