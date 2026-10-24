@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 import pytest
 
@@ -71,6 +72,39 @@ def test_visitante_sem_credencial_nao_recebe_injecao_de_sessao_alheia():
     adaptador.registrar_credencial_mcp_sessao('sessao-autenticada', criar_mensagem('geranet_joias', 'credencial-ficticia-do-usuario'))
     adaptador.registrar_credencial_mcp_sessao('sessao-visitante', {'contextoExterno': {'mcp_preferido': 'geranet_joias'}})
     assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_joias__listar', session_id='sessao-visitante') is None
+
+
+def test_injetar_por_sessao_viva_do_gateway_sqlite_sem_espelho_legado(tmp_path, monkeypatch):
+    banco = tmp_path / 'state.db'
+    with sqlite3.connect(banco) as conexao:
+        conexao.execute('CREATE TABLE sessions (id TEXT PRIMARY KEY, session_key TEXT, ended_at REAL)')
+        conexao.executemany('INSERT INTO sessions VALUES (?, ?, ?)', [
+            ('interna-primeira', 'logica-primeira', None),
+            ('interna-segunda', 'logica-segunda', None),
+            ('interna-encerrada', 'logica-primeira', 1234),
+            ('interna-sem-contexto', 'outra-conversa', None),
+        ])
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: tmp_path / 'sessions/sessions.json')
+    adaptador.registrar_credencial_mcp_sessao('logica-primeira', criar_mensagem('geranet_joias', 'credencial-primeira'))
+    adaptador.registrar_credencial_mcp_sessao('logica-segunda', criar_mensagem('geranet_joias', 'credencial-segunda'))
+    for interna, credencial in [('interna-segunda', 'credencial-segunda'), ('interna-primeira', 'credencial-primeira')]:
+        resultado = adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_joias__clientes_salvar', args={'chave_api': 'forjada'}, session_id=interna)
+        assert resultado['args']['chave_api'] == credencial
+    for interna in ['interna-encerrada', 'interna-sem-contexto', 'interna-inexistente']:
+        assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_joias__clientes_salvar', session_id=interna) is None
+    assert not (tmp_path / 'sessions/sessions.json').exists()
+
+
+def test_sqlite_atual_nao_usa_mapa_legado_quando_sessao_foi_encerrada(tmp_path, monkeypatch):
+    with sqlite3.connect(tmp_path / 'state.db') as conexao:
+        conexao.execute('CREATE TABLE sessions (id TEXT PRIMARY KEY, session_key TEXT, ended_at REAL)')
+        conexao.execute('INSERT INTO sessions VALUES (?, ?, ?)', ('interna', 'logica', 1234))
+    registro = tmp_path / 'sessions/sessions.json'
+    registro.parent.mkdir()
+    registro.write_text(json.dumps({'logica': {'session_id': 'interna'}}))
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: registro)
+    adaptador.registrar_credencial_mcp_sessao('logica', criar_mensagem('geranet_joias', 'credencial-encerrada'))
+    assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_joias__listar', session_id='interna') is None
 
 
 def test_redigir_credencial_antes_de_limitar_texto():

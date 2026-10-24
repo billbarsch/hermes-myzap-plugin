@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import sqlite3
 import math
 import mimetypes
 import json
@@ -823,8 +824,27 @@ def chave_sessao_logica_por_id_interno(session_id: str) -> str:
     if not session_id:
         return ""
 
+    registro_legado = caminho_registro_sessoes_hermes()
+    banco_sessoes = registro_legado.parent.parent / "state.db"
+    if banco_sessoes.is_file():
+        # O gateway atual usa SQLite como autoridade; ele não grava mais o espelho
+        # sessions.json. Consulte somente a sessão viva do próprio perfil.
+        conexao = None
+        try:
+            conexao = sqlite3.connect(banco_sessoes.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
+            registro = conexao.execute(
+                "SELECT session_key FROM sessions WHERE id = ? AND ended_at IS NULL LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            return str(registro[0] or "") if registro else ""
+        except (OSError, sqlite3.Error):
+            return ""
+        finally:
+            if conexao is not None:
+                conexao.close()
+
     try:
-        sessoes = json.loads(caminho_registro_sessoes_hermes().read_text(encoding="utf-8"))
+        sessoes = json.loads(registro_legado.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         return ""
 
