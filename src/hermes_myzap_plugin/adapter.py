@@ -1182,16 +1182,39 @@ class MyZapAdapter(BasePlatformAdapter):
         if not self._api_key:
             logger.warning("[myzap] MYZAP_API_KEY not configured")
             return False
+        origem_conector = self._registrar_origem_conector()
         self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
         self._poll_task = asyncio.create_task(self._poll_loop())
         self._mark_connected()
         logger.info(
-            "[myzap] connected in polling mode: base=%s interval=%ss source=%s",
+            "[myzap] connected in polling mode: base=%s interval=%ss source=%s code_connect=%s code_dispatch=%s",
             self._base_url,
             self._poll_interval,
             __file__,
+            origem_conector['origem_conexao'],
+            origem_conector['origem_despacho'],
         )
         return True
+
+    def _registrar_origem_conector(self) -> Dict[str, Any]:
+        """Comprove o código da instância viva sem registrar credenciais."""
+        diretorio = caminho_registro_sessoes_hermes().parent.parent / 'runtime'
+        diretorio.mkdir(parents=True, exist_ok=True, mode=0o700)
+        origem = {
+            'processo': os.getpid(),
+            'identificador_instancia': f'{os.getpid()}:{id(self)}',
+            'conectado_em': time.time(),
+            'modulo': type(self).__module__,
+            'origem_conexao': type(self).connect.__code__.co_filename,
+            'origem_despacho': type(self)._dispatch_if_relevant.__code__.co_filename,
+            'origem_middleware': injetar_credencial_mcp_widget.__code__.co_filename,
+            'arquivo_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        }
+        temporario = diretorio / f'.myzap-conector-carregado-{os.getpid()}-{id(self)}.tmp'
+        temporario.write_text(json.dumps(origem, ensure_ascii=False), encoding='utf-8')
+        temporario.chmod(0o600)
+        temporario.replace(diretorio / 'myzap-conector-carregado.json')
+        return origem
 
     async def disconnect(self) -> None:
         self._running = False

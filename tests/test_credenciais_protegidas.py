@@ -143,6 +143,21 @@ def test_diagnostico_opcional_nao_registra_credencial_nem_argumentos(tmp_path, m
     assert credencial not in caplog.text and 'nao-registar-argumento' not in caplog.text
 
 
+def test_prova_runtime_reflete_metodos_da_instancia_e_nao_apenas_arquivo_em_disco(tmp_path, monkeypatch):
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: tmp_path / 'sessions/sessions.json')
+    atendente = adaptador.MyZapAdapter(adaptador.PlatformConfig(enabled=True, extra={'api_key': 'chave-myzap-ficticia-protegida'}))
+    async def despacho_de_outra_origem(self, mensagem):
+        return False
+    monkeypatch.setattr(adaptador.MyZapAdapter, '_dispatch_if_relevant', despacho_de_outra_origem)
+    prova = atendente._registrar_origem_conector()
+    persistido = json.loads((tmp_path / 'runtime/myzap-conector-carregado.json').read_text())
+    assert persistido == prova
+    assert prova['origem_conexao'] == type(atendente).connect.__code__.co_filename
+    assert prova['origem_despacho'] == despacho_de_outra_origem.__code__.co_filename
+    assert prova['origem_despacho'] != adaptador.__file__
+    assert 'chave-myzap-ficticia-protegida' not in json.dumps(prova)
+
+
 def test_redigir_credencial_antes_de_limitar_texto():
     credencial = 'credencial-ficticia-que-nao-pode-ser-truncada'
     mensagem = criar_mensagem('geranet_joias', credencial)
