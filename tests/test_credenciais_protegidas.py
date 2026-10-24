@@ -111,6 +111,27 @@ def test_sqlite_atual_nao_usa_mapa_legado_quando_sessao_foi_encerrada(tmp_path, 
     assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_joias__listar', session_id='interna') is None
 
 
+def test_mensagem_usa_namespace_do_perfil_proprietario_antes_de_entrar_no_gateway(tmp_path, monkeypatch):
+    banco = tmp_path / 'state.db'
+    chave_gateway = 'agent:atendente-joias:myzap:dm:widget_1234567890abcd'
+    with sqlite3.connect(banco) as conexao:
+        conexao.execute('CREATE TABLE sessions (id TEXT PRIMARY KEY, session_key TEXT, ended_at REAL)')
+        conexao.execute('INSERT INTO sessions VALUES (?, ?, ?)', ('sessao-interna-gateway', chave_gateway, None))
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: tmp_path / 'sessions/sessions.json')
+    mensagem = criar_mensagem('geranet_joias', 'credencial-ficticia-do-roteamento')
+    mensagem['remoteJid'] = 'widget_1234567890abcd'
+    atendente = adaptador.MyZapAdapter(adaptador.PlatformConfig(enabled=True, extra={'api_key': 'chave-myzap-ficticia'}))
+    atendente.set_owner_profile('atendente-joias')
+    chave_registrada = atendente._chave_sessao_mensagem(mensagem)
+    assert chave_registrada == chave_gateway
+    adaptador.registrar_credencial_mcp_sessao(chave_registrada, mensagem)
+    resultado = adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_joias__clientes_salvar', session_id='sessao-interna-gateway')
+    assert resultado['args']['chave_api'] == mensagem['usuarioExternoId']
+    outro_atendente = adaptador.MyZapAdapter(adaptador.PlatformConfig(enabled=True, extra={'api_key': 'outra-chave-myzap-ficticia'}))
+    outro_atendente.set_owner_profile('atendente-petshop')
+    assert outro_atendente._chave_sessao_mensagem(mensagem) != chave_gateway
+
+
 def test_diagnostico_opcional_nao_registra_credencial_nem_argumentos(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(adaptador, '__file__', str(tmp_path / 'adapter.py'))
     (tmp_path / 'diagnostico-mcp.ativo').touch()

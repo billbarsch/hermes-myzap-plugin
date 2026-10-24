@@ -87,6 +87,7 @@ except (ImportError, ModuleNotFoundError):  # pragma: no cover - lightweight stu
         user_id: Optional[str] = None
         user_name: Optional[str] = None
         message_id: Optional[str] = None
+        profile: Optional[str] = None
 
     @dataclass
     class MessageEvent:
@@ -123,7 +124,13 @@ except (ImportError, ModuleNotFoundError):  # pragma: no cover - lightweight stu
             return None
 
         def build_source(self, chat_id: str, chat_name: Optional[str] = None, chat_type: str = "dm", user_id: Optional[str] = None, user_name: Optional[str] = None, message_id: Optional[str] = None, **kwargs: Any) -> _SessionSource:
-            return _SessionSource(self.platform, str(chat_id), chat_name, chat_type, str(user_id) if user_id else None, user_name, message_id)
+            return _SessionSource(self.platform, str(chat_id), chat_name, chat_type, str(user_id) if user_id else None, user_name, message_id, getattr(self, '_owner_profile', None))
+
+        def set_owner_profile(self, profile_name: Optional[str]) -> None:
+            self._owner_profile = profile_name if profile_name != 'default' else None
+
+        def _session_key_profile(self, source: Any = None) -> Optional[str]:
+            return getattr(source, 'profile', None) or getattr(self, '_owner_profile', None)
 
         async def handle_message(self, event: MessageEvent) -> None:
             return None
@@ -133,9 +140,9 @@ except (ImportError, ModuleNotFoundError):  # pragma: no cover - lightweight stu
         return url
 
     def build_session_key(source: Any, **kwargs: Any) -> str:
-        del kwargs
         plataforma = getattr(getattr(source, "platform", None), "value", "myzap")
-        return f"agent:main:{plataforma}:dm:{getattr(source, 'chat_id', '')}"
+        perfil = kwargs.get('profile') or 'main'
+        return f"agent:{perfil}:{plataforma}:dm:{getattr(source, 'chat_id', '')}"
 
 logger = logging.getLogger(__name__)
 
@@ -1213,6 +1220,7 @@ class MyZapAdapter(BasePlatformAdapter):
         """Gere a mesma chave de sessão usada pelo processamento do Hermes."""
         return build_session_key(
             evento.source,
+            profile=self._session_key_profile(evento.source),
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
@@ -1232,6 +1240,7 @@ class MyZapAdapter(BasePlatformAdapter):
         )
         return build_session_key(
             fonte,
+            profile=self._session_key_profile(fonte),
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
