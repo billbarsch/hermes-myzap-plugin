@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import sqlite3
@@ -67,6 +68,52 @@ def test_preservar_contexto_legado_sem_injecao_automatica():
     assert 'usuarioExternoId: identificador-legado' in adaptador.texto_contexto_externo_widget(mensagem)
     adaptador.registrar_credencial_mcp_sessao('sessao-legada', mensagem)
     assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_ponto__listar', session_id='sessao-legada') is None
+
+
+@pytest.mark.parametrize('servidor', SERVIDORES_PROJETOS)
+def test_identidade_gateway_nao_recebe_credencial_mas_injecao_e_sessao_permanecem(servidor):
+    mensagem = criar_mensagem(servidor, 'credencial-ficticia-que-nao-e-identidade')
+    mensagem.update({'id': 9182, 'remoteJid': 'widget_1234567890abcd', 'direcao': 'RECEBIDA', 'conteudo': '/help'})
+    atendente = adaptador.MyZapAdapter(adaptador.PlatformConfig(enabled=True, extra={'api_key': 'chave-myzap-ficticia', 'text_batch_delay_seconds': 0}))
+    atendente.set_owner_profile('atendente-joias')
+    eventos = []
+
+    async def capturar(evento):
+        eventos.append(evento)
+
+    atendente.handle_message = capturar
+    assert asyncio.run(atendente._dispatch_if_relevant(mensagem)) is True
+    assert len(eventos) == 1
+    evento = eventos[0]
+    assert evento.source.user_id == 'widget_1234567890abcd'
+    assert mensagem['usuarioExternoId'] not in str(evento.source)
+    assert mensagem['usuarioExternoId'] not in evento.channel_context
+    chave = atendente._chave_agrupamento_texto(evento)
+    assert chave == atendente._chave_sessao_mensagem(mensagem)
+    assert chave == 'agent:atendente-joias:myzap:dm:widget_1234567890abcd'
+    resultado = adaptador.injetar_credencial_mcp_widget(tool_name=f'mcp__{servidor}__consultar', session_id=chave)
+    assert resultado['args']['chave_api'] == mensagem['usuarioExternoId']
+
+
+def test_preservar_identidade_operacional_de_legado_e_canais_sem_widget():
+    legado = {'usuarioExternoId': 'identidade-legada'}
+    assert adaptador.identificador_remetente_mensagem(legado, 'widget_1234567890abcd', 'conversa') == 'identidade-legada'
+    mensagem = criar_mensagem('geranet_joias', 'identidade-canal-sem-widget')
+    assert adaptador.identificador_remetente_mensagem(mensagem, '5562999990000', 'conversa') == 'identidade-canal-sem-widget'
+
+
+def test_widget_sem_credencial_nao_pode_forjar_identidade_operacional_em_perfil_restrito():
+    mensagem = {'usuarioExternoId': 'administracao-interna-desabilitada', 'remoteJid': 'widget_1234567890abcd', 'id': 9183, 'direcao': 'RECEBIDA', 'conteudo': '/help'}
+    atendente = adaptador.MyZapAdapter(adaptador.PlatformConfig(enabled=True, extra={'api_key': 'chave-ficticia', 'identificar_widget_pelo_destino': True, 'text_batch_delay_seconds': 0}))
+    eventos = []
+
+    async def capturar(evento):
+        eventos.append(evento)
+
+    atendente.handle_message = capturar
+    assert asyncio.run(atendente._dispatch_if_relevant(mensagem)) is True
+    assert eventos[0].source.user_id == 'widget_1234567890abcd'
+    assert adaptador.configuracao_credencial_mcp_widget(mensagem) is None
 
 
 def test_visitante_sem_credencial_nao_recebe_injecao_de_sessao_alheia():
@@ -156,6 +203,18 @@ def test_prova_runtime_reflete_metodos_da_instancia_e_nao_apenas_arquivo_em_disc
     assert prova['origem_despacho'] == despacho_de_outra_origem.__code__.co_filename
     assert prova['origem_despacho'] != adaptador.__file__
     assert 'chave-myzap-ficticia-protegida' not in json.dumps(prova)
+    assert prova['identidade_widget_pelo_destino'] is False
+    assert prova['comandos_administrativos_restritos'] is False
+
+
+def test_prova_runtime_verifica_politica_real_carregada_no_adaptador(tmp_path, monkeypatch):
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: tmp_path / 'sessions/sessions.json')
+    configuracao = {'api_key': 'chave-ficticia', 'identificar_widget_pelo_destino': True, 'allow_admin_from': ['administracao-interna-desabilitada'], 'user_allowed_commands': [], 'group_allow_admin_from': ['administracao-interna-desabilitada'], 'group_user_allowed_commands': []}
+    atendente = adaptador.MyZapAdapter(adaptador.PlatformConfig(enabled=True, extra=configuracao))
+    assert atendente._registrar_origem_conector()['comandos_administrativos_restritos'] is True
+    assert atendente._registrar_origem_conector()['identidade_widget_pelo_destino'] is True
+    atendente.config.extra['user_allowed_commands'] = ['exec']
+    assert atendente._registrar_origem_conector()['comandos_administrativos_restritos'] is False
 
 
 def test_redigir_credencial_antes_de_limitar_texto():

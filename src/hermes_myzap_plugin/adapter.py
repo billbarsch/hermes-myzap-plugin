@@ -787,6 +787,13 @@ def configuracao_credencial_mcp_widget(message: Dict[str, Any]) -> Optional[Tupl
     return servidor, parametro, credencial
 
 
+def identificador_remetente_mensagem(mensagem: Dict[str, Any], destino: str, identificador_conversa: str, identificar_widget_pelo_destino: bool = False) -> str:
+    """Não propagar credenciais protegidas como identidade operacional do gateway."""
+    if is_widget_destination(destino) and (identificar_widget_pelo_destino or configuracao_credencial_mcp_widget(mensagem)):
+        return destino
+    return usuario_externo_id(mensagem) or destino or identificador_conversa
+
+
 def registrar_credencial_mcp_sessao(chave_sessao: str, message: Dict[str, Any]) -> None:
     configuracao = configuracao_credencial_mcp_widget(message)
     if not chave_sessao:
@@ -1209,6 +1216,13 @@ class MyZapAdapter(BasePlatformAdapter):
             'origem_despacho': type(self)._dispatch_if_relevant.__code__.co_filename,
             'origem_middleware': injetar_credencial_mcp_widget.__code__.co_filename,
             'arquivo_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'identidade_widget_pelo_destino': self.config.extra.get('identificar_widget_pelo_destino') is True,
+            'comandos_administrativos_restritos': all(self.config.extra.get(campo) == valor for campo, valor in {
+                'allow_admin_from': ['administracao-interna-desabilitada'],
+                'user_allowed_commands': [],
+                'group_allow_admin_from': ['administracao-interna-desabilitada'],
+                'group_user_allowed_commands': [],
+            }.items()),
         }
         temporario = diretorio / f'.myzap-conector-carregado-{os.getpid()}-{id(self)}.tmp'
         temporario.write_text(json.dumps(origem, ensure_ascii=False), encoding='utf-8')
@@ -1252,7 +1266,7 @@ class MyZapAdapter(BasePlatformAdapter):
         destino = message_destination(mensagem)
         chat_id = destino if is_widget_destination(destino) else (message_chat_id(mensagem) or destino)
         nome_remetente = usuario_externo_nome(mensagem) or message_sender_name(mensagem)
-        id_remetente = usuario_externo_id(mensagem) or destino or chat_id
+        id_remetente = identificador_remetente_mensagem(mensagem, destino, chat_id, self.config.extra.get('identificar_widget_pelo_destino') is True)
         fonte = self.build_source(
             chat_id=chat_id,
             chat_name=nome_remetente,
@@ -1471,7 +1485,7 @@ class MyZapAdapter(BasePlatformAdapter):
             return False
         chat_id = destino if is_widget_destination(destino) else (message_chat_id(msg) or destino)
         nome_remetente = usuario_externo_nome(msg) or message_sender_name(msg)
-        id_remetente = usuario_externo_id(msg) or destino or chat_id
+        id_remetente = identificador_remetente_mensagem(msg, destino, chat_id, self.config.extra.get('identificar_widget_pelo_destino') is True)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=nome_remetente,
