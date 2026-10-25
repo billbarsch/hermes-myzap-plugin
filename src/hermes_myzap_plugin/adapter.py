@@ -35,6 +35,7 @@ import time
 from collections import Counter, OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import CodeType
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlencode, urlparse
 
@@ -794,6 +795,36 @@ def identificador_remetente_mensagem(mensagem: Dict[str, Any], destino: str, ide
     return usuario_externo_id(mensagem) or destino or identificador_conversa
 
 
+def estrutura_codigo_executavel(codigo: CodeType) -> Dict[str, Any]:
+    """Descreva bytecode e constantes sem caminhos, endereços ou valores globais."""
+    def descrever_constante(valor: Any) -> Any:
+        if isinstance(valor, CodeType):
+            return estrutura_codigo_executavel(valor)
+        if isinstance(valor, bytes):
+            return {'bytes': valor.hex()}
+        if isinstance(valor, tuple):
+            return {'tupla': [descrever_constante(item) for item in valor]}
+        if isinstance(valor, frozenset):
+            return {'conjunto': sorted((descrever_constante(item) for item in valor), key=lambda item: json.dumps(item, sort_keys=True))}
+        if valor is None or isinstance(valor, (str, int, float, bool)):
+            return valor
+        raise ValueError('CONSTANTE_CODIGO_NAO_SUPORTADA')
+
+    return {
+        'instrucoes': codigo.co_code.hex(), 'constantes': [descrever_constante(valor) for valor in codigo.co_consts],
+        'nomes': list(codigo.co_names), 'variaveis': list(codigo.co_varnames), 'livres': list(codigo.co_freevars),
+        'celulas': list(codigo.co_cellvars), 'argumentos': codigo.co_argcount, 'posicionais': codigo.co_posonlyargcount,
+        'nomeados': codigo.co_kwonlyargcount, 'marcadores': codigo.co_flags, 'excecoes': codigo.co_exceptiontable.hex(),
+    }
+
+
+def impressao_codigo_funcao(funcao: Any) -> Optional[str]:
+    if funcao is None:
+        return None
+    estrutura = estrutura_codigo_executavel(funcao.__code__)
+    return hashlib.sha256(json.dumps(estrutura, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+
 def registrar_credencial_mcp_sessao(chave_sessao: str, message: Dict[str, Any]) -> None:
     configuracao = configuracao_credencial_mcp_widget(message)
     if not chave_sessao:
@@ -1102,8 +1133,9 @@ async def _enviar_midia_http(
 class MyZapAdapter(BasePlatformAdapter):
     """Hermes gateway adapter backed by MyZap's REST API."""
 
-    def __init__(self, config: PlatformConfig):
+    def __init__(self, config: PlatformConfig, *, interceptador_registrado: Any = None):
         super().__init__(config=config, platform=_myzap_platform())
+        self._interceptador_registrado = interceptador_registrado
         extra = config.extra or {}
         self._base_url = _base_url_from(extra)
         self._api_key = _api_key_from(extra)
@@ -1212,14 +1244,28 @@ class MyZapAdapter(BasePlatformAdapter):
         """Comprove o código da instância viva sem registrar credenciais."""
         diretorio = caminho_registro_sessoes_hermes().parent.parent / 'runtime'
         diretorio.mkdir(parents=True, exist_ok=True, mode=0o700)
+        conexao = getattr(self.connect, '__func__', self.connect)
+        despacho = getattr(self._dispatch_if_relevant, '__func__', self._dispatch_if_relevant)
+        registro_credencial = despacho.__globals__.get('registrar_credencial_mcp_sessao')
+        interceptador = self._interceptador_registrado
+        cache_registro = registro_credencial.__globals__.get('_credenciais_mcp_por_sessao') if registro_credencial else None
+        cache_interceptador = interceptador.__globals__.get('_credenciais_mcp_por_sessao') if interceptador else None
         origem = {
             'processo': os.getpid(),
             'identificador_instancia': f'{os.getpid()}:{id(self)}',
             'conectado_em': time.time(),
             'modulo': type(self).__module__,
-            'origem_conexao': type(self).connect.__code__.co_filename,
-            'origem_despacho': type(self)._dispatch_if_relevant.__code__.co_filename,
-            'origem_middleware': injetar_credencial_mcp_widget.__code__.co_filename,
+            'origem_conexao': conexao.__code__.co_filename,
+            'origem_despacho': despacho.__code__.co_filename,
+            'origem_middleware': interceptador.__code__.co_filename if interceptador else None,
+            'middleware_registrado_confirmado': interceptador is not None,
+            'registro_middleware_mesmo_cache': cache_registro is not None and cache_registro is cache_interceptador,
+            'funcoes_compiladas': {
+                'connect': impressao_codigo_funcao(conexao),
+                '_dispatch_if_relevant': impressao_codigo_funcao(despacho),
+                'registrar_credencial_mcp_sessao': impressao_codigo_funcao(registro_credencial),
+                'injetar_credencial_mcp_widget': impressao_codigo_funcao(interceptador),
+            },
             'arquivo_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'identidade_widget_pelo_destino': self.config.extra.get('identificar_widget_pelo_destino') is True,
             'comandos_administrativos_restritos': all(self.config.extra.get(campo) == valor for campo, valor in {
@@ -1775,11 +1821,13 @@ def _env_enablement() -> dict | None:
 
 
 def register(ctx) -> None:
-    ctx.register_middleware("tool_request", injetar_credencial_mcp_widget)
+    interceptador = injetar_credencial_mcp_widget
+    classe_adaptador = MyZapAdapter
+    ctx.register_middleware("tool_request", interceptador)
     ctx.register_platform(
         name="myzap",
         label="MyZap",
-        adapter_factory=lambda cfg: MyZapAdapter(cfg),
+        adapter_factory=lambda configuracao: classe_adaptador(configuracao, interceptador_registrado=interceptador),
         check_fn=check_requirements,
         validate_config=validate_config,
         is_connected=is_connected,

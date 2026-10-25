@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+from types import FunctionType, SimpleNamespace
 
 import pytest
 
@@ -245,6 +246,54 @@ def test_prova_runtime_verifica_politica_real_carregada_no_adaptador(tmp_path, m
     assert atendente._registrar_origem_conector()['identidade_widget_pelo_destino'] is True
     atendente.config.extra['user_allowed_commands'] = ['exec']
     assert atendente._registrar_origem_conector()['comandos_administrativos_restritos'] is False
+
+
+def test_impressao_compilada_independe_do_caminho_e_distingue_classe_antiga_no_mesmo_caminho(tmp_path, monkeypatch):
+    primeira = compile('def consultar():\n return 11\n', '/primeiro/adapter.py', 'exec')
+    segunda = compile('\n\ndef consultar():\n return 11\n', '/segundo/adapter.py', 'exec')
+    primeira = FunctionType(next(valor for valor in primeira.co_consts if hasattr(valor, 'co_code')), {})
+    segunda = FunctionType(next(valor for valor in segunda.co_consts if hasattr(valor, 'co_code')), {})
+    assert adaptador.impressao_codigo_funcao(primeira) == adaptador.impressao_codigo_funcao(segunda)
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: tmp_path / 'sessions/sessions.json')
+    original = adaptador.MyZapAdapter._dispatch_if_relevant
+    codigo_antigo = compile('async def _dispatch_if_relevant(self, mensagem):\n return False\n', original.__code__.co_filename, 'exec')
+    despacho_antigo = FunctionType(next(valor for valor in codigo_antigo.co_consts if hasattr(valor, 'co_code')), original.__globals__)
+    monkeypatch.setattr(adaptador.MyZapAdapter, '_dispatch_if_relevant', despacho_antigo)
+    atendente = adaptador.MyZapAdapter(adaptador.PlatformConfig(enabled=True, extra={'api_key': 'chave-ficticia'}), interceptador_registrado=adaptador.injetar_credencial_mcp_widget)
+    prova = atendente._registrar_origem_conector()
+    assert prova['origem_despacho'] == original.__code__.co_filename
+    assert prova['funcoes_compiladas']['_dispatch_if_relevant'] != adaptador.impressao_codigo_funcao(original)
+
+
+def test_prova_usa_interceptador_real_capturado_no_registro_e_nao_global_do_connect(tmp_path, monkeypatch):
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: tmp_path / 'sessions/sessions.json')
+    registro = {}
+    contexto = SimpleNamespace(register_middleware=lambda evento, funcao: registro.update(interceptador=funcao), register_platform=lambda **parametros: registro.update(plataforma=parametros))
+    adaptador.register(contexto)
+    interceptador_real = registro['interceptador']
+
+    def interceptador_de_outro_registro(**parametros):
+        return None
+
+    monkeypatch.setattr(adaptador, 'injetar_credencial_mcp_widget', interceptador_de_outro_registro)
+    atendente = registro['plataforma']['adapter_factory'](adaptador.PlatformConfig(enabled=True, extra={'api_key': 'chave-ficticia'}))
+    prova = atendente._registrar_origem_conector()
+    assert prova['middleware_registrado_confirmado'] is True
+    assert prova['origem_middleware'] == interceptador_real.__code__.co_filename
+    assert prova['funcoes_compiladas']['injetar_credencial_mcp_widget'] == adaptador.impressao_codigo_funcao(interceptador_real)
+    assert prova['funcoes_compiladas']['injetar_credencial_mcp_widget'] != adaptador.impressao_codigo_funcao(interceptador_de_outro_registro)
+
+
+def test_prova_recusa_cache_de_outro_modulo_mesmo_com_bytecode_identico(tmp_path, monkeypatch):
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: tmp_path / 'sessions/sessions.json')
+    interceptador = adaptador.injetar_credencial_mcp_widget
+    outro_modulo = {**interceptador.__globals__, '_credenciais_mcp_por_sessao': {}}
+    outro_interceptador = FunctionType(interceptador.__code__, outro_modulo)
+    atendente = adaptador.MyZapAdapter(adaptador.PlatformConfig(enabled=True, extra={'api_key': 'chave-ficticia'}), interceptador_registrado=outro_interceptador)
+    prova = atendente._registrar_origem_conector()
+    assert adaptador.impressao_codigo_funcao(outro_interceptador) == adaptador.impressao_codigo_funcao(interceptador)
+    assert prova['middleware_registrado_confirmado'] is True
+    assert prova['registro_middleware_mesmo_cache'] is False
 
 
 def test_redigir_credencial_antes_de_limitar_texto():
