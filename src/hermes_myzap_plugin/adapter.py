@@ -812,10 +812,15 @@ def registrar_credencial_mcp_sessao(chave_sessao: str, message: Dict[str, Any]) 
         parametros_recebidos = contexto.get(f"mcp_{servidor}_parametros_contexto")
         parametros_contexto = {}
         if isinstance(parametros_recebidos, dict):
-            for nome in ("empresa_codigo", "unidade_codigo"):
+            nomes_permitidos = ("empresa_codigo", "unidade_codigo", "empresa_id") if servidor == 'geranet_ponto' else ("empresa_codigo", "unidade_codigo")
+            for nome in nomes_permitidos:
                 valor = parametros_recebidos.get(nome)
                 if isinstance(valor, (str, int)) and not isinstance(valor, bool) and 0 < len(str(valor).strip()) <= 255:
                     parametros_contexto[nome] = str(valor).strip()
+        if servidor == 'geranet_ponto':
+            empresa = parametros_contexto.get('empresa_id', '')
+            if not empresa.isdecimal() or int(empresa) <= 0:
+                return
         configuracao = (*configuracao, parametros_contexto)
         _credenciais_mcp_por_sessao[chave_sessao] = configuracao
         _credenciais_mcp_por_sessao.move_to_end(chave_sessao)

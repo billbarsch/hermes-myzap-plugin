@@ -25,7 +25,7 @@ def isolar_credenciais():
 
 
 def criar_mensagem(servidor, credencial):
-    return {
+    mensagem = {
         'usuarioExternoId': credencial,
         'usuarioExternoNome': 'Pessoa autenticada',
         'contextoExterno': {
@@ -37,6 +37,36 @@ def criar_mensagem(servidor, credencial):
             'estrutura': {'itens': [{'valor': credencial}]},
         },
     }
+    if servidor == 'geranet_ponto':
+        mensagem['contextoExterno']['mcp_geranet_ponto_parametros_contexto'] = {'empresa_id': 17}
+    return mensagem
+
+
+def test_ponto_fixa_empresa_selecionada_em_sessoes_intercaladas_e_nao_outro_projeto():
+    for sessao, empresa in [('primeira-empresa', 11), ('segunda-empresa', 23)]:
+        mensagem = criar_mensagem('geranet_ponto', 'credencial-pessoal-ficticia')
+        mensagem['contextoExterno']['mcp_geranet_ponto_parametros_contexto'] = {'empresa_id': empresa, 'administrador': True}
+        adaptador.registrar_credencial_mcp_sessao(sessao, mensagem)
+    for sessao, empresa in [('segunda-empresa', '23'), ('primeira-empresa', '11')]:
+        argumentos = {'empresa_id': 999, 'consulta': {'empresa_id': 999}, 'dados': {'empresa_id': 999, 'nome': 'Registro fictício'}}
+        resultado = adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_ponto__consultar', session_id=sessao, args=argumentos)['args']
+        assert resultado['empresa_id'] == resultado['consulta']['empresa_id'] == resultado['dados']['empresa_id'] == empresa
+        assert 'administrador' not in resultado
+        assert argumentos['empresa_id'] == argumentos['dados']['empresa_id'] == 999
+        assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_salao__consultar', session_id=sessao, args=argumentos) is None
+    mensagem = criar_mensagem('geranet_salao', 'credencial-ficticia-do-salao')
+    mensagem['contextoExterno']['mcp_geranet_salao_parametros_contexto'] = {'empresa_id': 11}
+    adaptador.registrar_credencial_mcp_sessao('outro-projeto', mensagem)
+    assert 'empresa_id' not in adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_salao__consultar', session_id='outro-projeto')['args']
+
+
+@pytest.mark.parametrize('empresa', [None, '', 0, -1, True, 'outra-empresa'])
+def test_ponto_sem_empresa_valida_remove_injecao_anterior_sem_usar_argumento_do_modelo(empresa):
+    mensagem = criar_mensagem('geranet_ponto', 'credencial-ficticia')
+    adaptador.registrar_credencial_mcp_sessao('sessao-ponto', mensagem)
+    mensagem['contextoExterno']['mcp_geranet_ponto_parametros_contexto'] = {'empresa_id': empresa}
+    adaptador.registrar_credencial_mcp_sessao('sessao-ponto', mensagem)
+    assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_ponto__consultar', session_id='sessao-ponto', args={'empresa_id': 17}) is None
 
 
 @pytest.mark.parametrize('servidor', SERVIDORES_PROJETOS)
