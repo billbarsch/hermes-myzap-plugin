@@ -29,7 +29,7 @@ A prova `runtime/myzap-conector-carregado.json` também identifica o código exe
 
 Projetos com seleção de empresa ou unidade podem informar `mcp_<servidor>_parametros_contexto`. Somente `empresa_codigo` e `unidade_codigo` são aceitos; esses valores substituem parâmetros conflitantes do modelo. A API do projeto continua responsável por validar as permissões. Mudanças do contexto atualizam também o identificador interno da sessão; retornar a um contexto anônimo remove sua credencial anterior.
 
-Exclusivamente no servidor `geranet_ponto`, o contexto também deve incluir `mcp_geranet_ponto_parametros_contexto.empresa_id`, identificador positivo da empresa selecionada. Ele substitui os argumentos conflitantes do modelo, inclusive em `consulta` e `dados`. Sem esse escopo válido não há injeção da chave nesse servidor; não se utiliza outra empresa ou argumento do modelo como alternativa. O backend Ponto revalida o vínculo do usuário antes da ação. Os demais servidores não aceitam `empresa_id` como parâmetro de contexto.
+Exclusivamente no servidor `geranet_ponto`, o contexto também deve incluir `mcp_geranet_ponto_parametros_contexto.empresa_id`, identificador positivo da empresa selecionada. Ele é injetado como inteiro, conforme o JSON Schema do Ponto, e substitui os argumentos conflitantes do modelo, inclusive em `consulta` e `dados`. Sem esse escopo válido não há injeção da chave nesse servidor; não se utiliza outra empresa ou argumento do modelo como alternativa. O backend Ponto revalida o vínculo do usuário antes da ação. Os demais servidores não aceitam `empresa_id` como parâmetro de contexto; os campos `empresa_codigo` e `unidade_codigo` permanecem strings.
 
 ## Requisitos
 

@@ -5,6 +5,7 @@ import sqlite3
 from types import FunctionType, SimpleNamespace
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from hermes_myzap_plugin import adapter as adaptador
 
@@ -48,10 +49,11 @@ def test_ponto_fixa_empresa_selecionada_em_sessoes_intercaladas_e_nao_outro_proj
         mensagem = criar_mensagem('geranet_ponto', 'credencial-pessoal-ficticia')
         mensagem['contextoExterno']['mcp_geranet_ponto_parametros_contexto'] = {'empresa_id': empresa, 'administrador': True}
         adaptador.registrar_credencial_mcp_sessao(sessao, mensagem)
-    for sessao, empresa in [('segunda-empresa', '23'), ('primeira-empresa', '11')]:
+    for sessao, empresa in [('segunda-empresa', 23), ('primeira-empresa', 11)]:
         argumentos = {'empresa_id': 999, 'consulta': {'empresa_id': 999}, 'dados': {'empresa_id': 999, 'nome': 'Registro fictício'}}
         resultado = adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_ponto__consultar', session_id=sessao, args=argumentos)['args']
         assert resultado['empresa_id'] == resultado['consulta']['empresa_id'] == resultado['dados']['empresa_id'] == empresa
+        assert type(resultado['empresa_id']) is int
         assert 'administrador' not in resultado
         assert argumentos['empresa_id'] == argumentos['dados']['empresa_id'] == 999
         assert adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_salao__consultar', session_id=sessao, args=argumentos) is None
@@ -59,6 +61,19 @@ def test_ponto_fixa_empresa_selecionada_em_sessoes_intercaladas_e_nao_outro_proj
     mensagem['contextoExterno']['mcp_geranet_salao_parametros_contexto'] = {'empresa_id': 11}
     adaptador.registrar_credencial_mcp_sessao('outro-projeto', mensagem)
     assert 'empresa_id' not in adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_salao__consultar', session_id='outro-projeto')['args']
+
+
+@pytest.mark.parametrize('empresa', [17, '17', '0017'])
+def test_ponto_injeta_inteiro_compativel_com_o_contrato_draft_do_mcp(empresa):
+    mensagem = criar_mensagem('geranet_ponto', 'credencial-ficticia')
+    mensagem['contextoExterno']['mcp_geranet_ponto_parametros_contexto'] = {'empresa_id': empresa}
+    adaptador.registrar_credencial_mcp_sessao('sessao-inteiro', mensagem)
+    resultado = adaptador.injetar_credencial_mcp_widget(tool_name='mcp__geranet_ponto__consultar', session_id='sessao-inteiro', args={'empresa_id': 999, 'consulta': {'empresa_id': 999}, 'dados': {'empresa_id': 999}})['args']
+    # Contrato publicado pelo McpController do Ponto9bd7acc: integer, minimum1.
+    contrato_empresa = Draft202012Validator({'type': 'integer', 'minimum': 1})
+    for valor in [resultado['empresa_id'], resultado['consulta']['empresa_id'], resultado['dados']['empresa_id']]:
+        assert type(valor) is int and valor == 17
+        contrato_empresa.validate(valor)
 
 
 @pytest.mark.parametrize('empresa', [None, '', 0, -1, True, 'outra-empresa'])

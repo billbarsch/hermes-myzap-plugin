@@ -854,6 +854,7 @@ def registrar_credencial_mcp_sessao(chave_sessao: str, message: Dict[str, Any]) 
             empresa = parametros_contexto.get('empresa_id', '')
             if not empresa.isdecimal() or int(empresa) <= 0:
                 return
+            parametros_contexto['empresa_id'] = int(empresa)
         configuracao = (*configuracao, parametros_contexto)
         _credenciais_mcp_por_sessao[chave_sessao] = configuracao
         _credenciais_mcp_por_sessao.move_to_end(chave_sessao)
