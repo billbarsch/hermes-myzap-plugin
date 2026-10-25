@@ -15,7 +15,7 @@ Status: v0.2, instalável/testável localmente, sem credenciais no repositório.
 - Baixa áudios recebidos para o cache do Hermes e entrega como `MessageType.VOICE`, usando o mesmo fluxo central de transcrição dos conectores Telegram/WhatsApp.
 - Envia documentos, imagens, vídeos e áudios por `POST {MYZAP_BASE_URL}/mensagens/midia`.
 - Deduplica mensagens por `messageId`/`id` e persiste cursor/estado para evitar replay após restart.
-- Preserva destinos de widget público no formato `widget_<hash>`.
+- Preserva destinos de widget público nos dois contratos exatos: `widget_` seguido de 14 caracteres hexadecimais legados ou 48 caracteres hexadecimais aleatórios atuais. Outros tamanhos e letras maiúsculas são recusados.
 - Usa allowlist do Hermes (`MYZAP_ALLOWED_USERS`/`MYZAP_ALLOW_ALL_USERS`) e allowlist opcional do adapter (`MYZAP_ALLOWED_NUMBERS`).
 - Pode ser restringido a um perfil Hermes específico com `MYZAP_HERMES_PROFILE`, mas por padrão aceita qualquer perfil em que for instalado/configurado.
 
@@ -26,6 +26,8 @@ Quando o contexto do widget informa `mcp_preferido` e `mcp_<servidor>_parametro_
 Nesses widgets, `source.user_id` usa o destino opaco `widget_<hash>`, sem propagar a chave como identidade operacional ou aos logs de comandos do gateway. Configure também `platforms.myzap.identificar_widget_pelo_destino: true` para usar essa identidade com todos os visitantes do perfil, inclusive sem contexto autenticado. A chave da sessão DM permanece vinculada ao mesmo chat. Restrinja os comandos administrativos pelo controle oficial `allow_admin_from` e `user_allowed_commands` do Hermes; limitar apenas o MCP não restringe comandos internos do gateway.
 
 A prova `runtime/myzap-conector-carregado.json` também identifica o código executável das funções reais da instância. O registro captura o middleware entregue ao gateway e verifica que ele consulta o mesmo cache usado pelo registro de credenciais do despacho efetivo. Os fingerprints incluem bytecode, constantes recursivas e nomes, sem caminhos, endereços de memória ou valores globais. O instalador deve calcular os esperados compilando a fonte pública no mesmo Python do runtime, sem executá-la. Assim uma classe antiga no mesmo caminho ou um hook de outro módulo não é confundido com a versão publicada.
+
+A prova também inspeciona o classificador realmente referenciado pelo despacho, identidade, contexto, chave da sessão e envio: todos devem compartilhar o mesmo callable. Ela registra seu fingerprint, a expressão regular efetiva, os marcadores e resultados de amostras fictícias 14/48 e inválidas. Isso detecta uma regex global antiga mesmo quando o bytecode da função é idêntico. A ativação exige essa evidência nova antes de habilitar o atendimento.
 
 Projetos com seleção de empresa ou unidade podem informar `mcp_<servidor>_parametros_contexto`. Somente `empresa_codigo` e `unidade_codigo` são aceitos; esses valores substituem parâmetros conflitantes do modelo. A API do projeto continua responsável por validar as permissões. Mudanças do contexto atualizam também o identificador interno da sessão; retornar a um contexto anônimo remove sua credencial anterior.
 

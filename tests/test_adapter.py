@@ -72,6 +72,41 @@ def test_widget_destination_requires_exact_hash_shape():
     assert is_widget_destination("widget_abc123def4567890") is False
 
 
+@pytest.mark.parametrize('tamanho', [14, 48])
+@pytest.mark.parametrize('autenticado', [True, False])
+def test_fluxo_real_widget_preserva_destino_identidade_opaca_redacao_e_resposta(monkeypatch, tamanho, autenticado):
+    async def executar():
+        monkeypatch.setenv('HERMES_PROFILE', 'atendente-teste')
+        destino = 'widget_' + 'a1' * (tamanho // 2)
+        credencial = 'credencial-SOMENTE-FICTICIA' if autenticado else ''
+        contexto = {'projeto': 'geranet_teste', 'mcp_preferido': 'geranet_teste', 'mcp_geranet_teste_parametro_credencial': 'chave_api'}
+        mensagem = {'id': 31, 'direcao': 'RECEBIDA', 'conteudo': 'Consulta ficticia', 'remoteJid': destino, 'conversaId': 9, 'criadoEm': '2026-05-31T12:00:00.000Z', 'usuarioExternoId': credencial, 'contextoExterno': contexto}
+        atendente = MyZapAdapter(PlatformConfig(enabled=True, extra={'base_url': 'https://example.test/api/v1', 'api_key': 'chave-MYZAP-FICTICIA', 'identificar_widget_pelo_destino': True}))
+        atendente.set_owner_profile('atendente-teste')
+        cliente = FakeClient({'mensagens': [mensagem]})
+        atendente._http_client = cliente
+        eventos = []
+        async def capturar(evento): eventos.append(evento)
+        atendente.handle_message = capturar
+        assert await atendente.poll_once() == 1
+        assert eventos[0].source.chat_id == eventos[0].source.user_id == destino
+        if autenticado:
+            assert credencial not in eventos[0].channel_context
+            argumentos = injetar_credencial_mcp_widget(tool_name='mcp__geranet_teste__consultar', session_id=atendente._chave_sessao_mensagem(mensagem))['args']
+            assert argumentos['chave_api'] == credencial
+        else:
+            assert injetar_credencial_mcp_widget(tool_name='mcp__geranet_teste__consultar', session_id=atendente._chave_sessao_mensagem(mensagem)) is None
+        assert (await atendente.send(destino, 'Resposta ficticia')).success is True
+        assert cliente.posts[-1]['json']['numero'] == destino
+    asyncio.run(executar())
+
+
+@pytest.mark.parametrize('tamanho', [0, 13, 15, 32, 47, 49])
+def test_destino_widget_recusa_comprimentos_fora_dos_dois_contratos(tamanho):
+    assert is_widget_destination('widget_' + 'a' * tamanho) is False
+    assert message_destination({'remoteJid': 'widget_' + 'a' * tamanho}) == ''
+
+
 def test_message_destination_normalizes_whatsapp_jid():
     msg = {"remoteJid": "+55 (62) 99999-0000@s.whatsapp.net"}
     assert message_destination(msg) == "5562999990000"

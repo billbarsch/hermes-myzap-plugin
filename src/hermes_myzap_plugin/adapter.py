@@ -156,7 +156,7 @@ DEDUP_WINDOW_SECONDS = 15 * 60
 DEDUP_MAX_SIZE = 5000
 RECONNECT_BACKOFF_SECONDS = (2, 5, 10, 30, 60)
 DEFAULT_REQUIRED_PROFILE = ""
-WIDGET_DESTINATION_RE = re.compile(r"^widget_[a-f0-9]{14}$")
+WIDGET_DESTINATION_RE = re.compile(r"^widget_(?:[a-f0-9]{14}|[a-f0-9]{48})$")
 MAX_CREDENCIAIS_MCP_SESSAO = 5000
 ATRASO_AGRUPAMENTO_TEXTO_PADRAO_SEGUNDOS = 10.0
 ATRASO_AGRUPAMENTO_TEXTO_LONGO_PADRAO_SEGUNDOS = 15.0
@@ -1253,6 +1253,12 @@ class MyZapAdapter(BasePlatformAdapter):
         interceptador = self._interceptador_registrado
         cache_registro = registro_credencial.__globals__.get('_credenciais_mcp_por_sessao') if registro_credencial else None
         cache_interceptador = interceptador.__globals__.get('_credenciais_mcp_por_sessao') if interceptador else None
+        classificador = despacho.__globals__.get('is_widget_destination')
+        auxiliares = [despacho.__globals__.get(nome) for nome in ['message_destination', 'widget_public_id', 'identificador_remetente_mensagem', 'texto_contexto_externo_widget']]
+        auxiliares += [getattr(funcao, '__func__', funcao) for funcao in [self._number_allowed, self.send, self._chave_sessao_mensagem]]
+        classificadores = [funcao.__globals__.get('is_widget_destination') if callable(funcao) else None for funcao in auxiliares]
+        expressao = classificador.__globals__.get('WIDGET_DESTINATION_RE') if callable(classificador) else None
+        amostras = {'legado14': 'widget_' + 'a1' * 7, 'seguro48': 'widget_' + 'a1' * 24, 'curto13': 'widget_' + 'a' * 13, 'intermediario32': 'widget_' + 'a' * 32, 'longo49': 'widget_' + 'a' * 49, 'maiusculo48': 'widget_' + 'A' * 48, 'sufixo': 'widget_' + 'a' * 48 + ':outro'}
         origem = {
             'processo': os.getpid(),
             'identificador_instancia': f'{os.getpid()}:{id(self)}',
@@ -1263,11 +1269,18 @@ class MyZapAdapter(BasePlatformAdapter):
             'origem_middleware': interceptador.__code__.co_filename if interceptador else None,
             'middleware_registrado_confirmado': interceptador is not None,
             'registro_middleware_mesmo_cache': cache_registro is not None and cache_registro is cache_interceptador,
+            'classificador_widget_compartilhado': callable(classificador) and all(funcao is classificador for funcao in classificadores),
+            'classificador_widget': {
+                'padrao': getattr(expressao, 'pattern', None),
+                'marcadores': getattr(expressao, 'flags', None),
+                'amostras': {nome: bool(classificador(valor)) if callable(classificador) else None for nome, valor in amostras.items()},
+            },
             'funcoes_compiladas': {
                 'connect': impressao_codigo_funcao(conexao),
                 '_dispatch_if_relevant': impressao_codigo_funcao(despacho),
                 'registrar_credencial_mcp_sessao': impressao_codigo_funcao(registro_credencial),
                 'injetar_credencial_mcp_widget': impressao_codigo_funcao(interceptador),
+                'is_widget_destination': impressao_codigo_funcao(classificador),
             },
             'arquivo_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'identidade_widget_pelo_destino': self.config.extra.get('identificar_widget_pelo_destino') is True,

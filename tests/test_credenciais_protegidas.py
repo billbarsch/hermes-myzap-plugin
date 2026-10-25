@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 from types import FunctionType, SimpleNamespace
 
@@ -309,6 +310,32 @@ def test_prova_recusa_cache_de_outro_modulo_mesmo_com_bytecode_identico(tmp_path
     assert adaptador.impressao_codigo_funcao(outro_interceptador) == adaptador.impressao_codigo_funcao(interceptador)
     assert prova['middleware_registrado_confirmado'] is True
     assert prova['registro_middleware_mesmo_cache'] is False
+
+
+def test_prova_classificador_detecta_regex_antiga_com_mesmo_bytecode(tmp_path, monkeypatch):
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: tmp_path / 'sessions/sessions.json')
+    atendente = adaptador.MyZapAdapter(adaptador.PlatformConfig(enabled=True, extra={'api_key': 'chave-ficticia'}))
+    antes = atendente._registrar_origem_conector()
+    assert antes['classificador_widget_compartilhado'] is True
+    assert antes['classificador_widget']['amostras'] == {'legado14': True, 'seguro48': True, 'curto13': False, 'intermediario32': False, 'longo49': False, 'maiusculo48': False, 'sufixo': False}
+    monkeypatch.setattr(adaptador, 'WIDGET_DESTINATION_RE', re.compile(r'^widget_[a-f0-9]{14}$'))
+    depois = atendente._registrar_origem_conector()
+    assert antes['funcoes_compiladas'] == depois['funcoes_compiladas']
+    assert depois['classificador_widget']['amostras']['seguro48'] is False
+    assert antes['classificador_widget']['padrao'] != depois['classificador_widget']['padrao']
+
+
+def test_prova_classificador_recusa_auxiliar_de_outro_modulo_com_regex_antiga(tmp_path, monkeypatch):
+    monkeypatch.setattr(adaptador, 'caminho_registro_sessoes_hermes', lambda: tmp_path / 'sessions/sessions.json')
+    classificador = adaptador.is_widget_destination
+    antigo = FunctionType(classificador.__code__, {**classificador.__globals__, 'WIDGET_DESTINATION_RE': re.compile(r'^widget_[a-f0-9]{14}$')})
+    identificador = adaptador.identificador_remetente_mensagem
+    auxiliar = FunctionType(identificador.__code__, {**identificador.__globals__, 'is_widget_destination': antigo}, argdefs=identificador.__defaults__)
+    monkeypatch.setattr(adaptador, 'identificador_remetente_mensagem', auxiliar)
+    atendente = adaptador.MyZapAdapter(adaptador.PlatformConfig(enabled=True, extra={'api_key': 'chave-ficticia'}))
+    prova = atendente._registrar_origem_conector()
+    assert prova['classificador_widget']['amostras']['seguro48'] is True
+    assert prova['classificador_widget_compartilhado'] is False
 
 
 def test_impressao_compilada_representa_fatias_constantes_do_python_314():
