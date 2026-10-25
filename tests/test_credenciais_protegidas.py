@@ -296,6 +296,17 @@ def test_prova_recusa_cache_de_outro_modulo_mesmo_com_bytecode_identico(tmp_path
     assert prova['registro_middleware_mesmo_cache'] is False
 
 
+def test_impressao_compilada_representa_fatias_constantes_do_python_314():
+    def consultar():
+        return None
+
+    primeira = FunctionType(consultar.__code__.replace(co_consts=consultar.__code__.co_consts + (slice(1, 7, None),)), {})
+    segunda = FunctionType(consultar.__code__.replace(co_consts=consultar.__code__.co_consts + (slice(2, 7, None),)), {})
+    estrutura = adaptador.estrutura_codigo_executavel(primeira.__code__)
+    assert estrutura['constantes'][-1] == {'fatia': [1, 7, None]}
+    assert adaptador.impressao_codigo_funcao(primeira) != adaptador.impressao_codigo_funcao(segunda)
+
+
 def test_redigir_credencial_antes_de_limitar_texto():
     credencial = 'credencial-ficticia-que-nao-pode-ser-truncada'
     mensagem = criar_mensagem('geranet_joias', credencial)

@@ -802,6 +802,8 @@ def estrutura_codigo_executavel(codigo: CodeType) -> Dict[str, Any]:
             return estrutura_codigo_executavel(valor)
         if isinstance(valor, bytes):
             return {'bytes': valor.hex()}
+        if isinstance(valor, slice):
+            return {'fatia': [descrever_constante(valor.start), descrever_constante(valor.stop), descrever_constante(valor.step)]}
         if isinstance(valor, tuple):
             return {'tupla': [descrever_constante(item) for item in valor]}
         if isinstance(valor, frozenset):
