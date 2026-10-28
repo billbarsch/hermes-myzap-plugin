@@ -339,8 +339,13 @@ def test_poll_once_dispatches_inbound_text(monkeypatch):
     asyncio.run(run())
 
 
-def test_poll_once_dispatches_inbound_audio_without_text(monkeypatch):
+def test_poll_once_dispatches_inbound_audio_without_text(monkeypatch, tmp_path):
     async def run():
+        arquivo_audio = tmp_path / 'nota.mp3'
+        arquivo_audio.write_bytes(b'audio ficticio')
+        async def armazenar_audio_teste(*argumentos, **opcoes):
+            return str(arquivo_audio)
+        monkeypatch.setattr(adapter_module, 'cache_audio_from_url', armazenar_audio_teste)
         monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
         a = MyZapAdapter(cfg)
@@ -376,7 +381,7 @@ def test_poll_once_dispatches_inbound_audio_without_text(monkeypatch):
         assert count == 1
         assert events[0].text == "(The user sent a message with no text content)"
         assert events[0].message_type.name == "VOICE"
-        assert events[0].media_urls == ["https://storage/nota.mp3"]
+        assert events[0].media_urls == [str(arquivo_audio)]
         assert events[0].media_types == ["audio/mpeg"]
         assert events[0].source.chat_id == "widget_abc123def45678"
         assert events[0].raw_message["arquivos"][0]["mimeType"] == "audio/mpeg"
@@ -384,14 +389,16 @@ def test_poll_once_dispatches_inbound_audio_without_text(monkeypatch):
     asyncio.run(run())
 
 
-def test_poll_once_dispatches_inbound_audio_for_hermes_transcription(monkeypatch):
+def test_poll_once_dispatches_inbound_audio_for_hermes_transcription(monkeypatch, tmp_path):
     async def run():
         monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         cache_calls = []
 
         async def fake_cache_audio_from_url(url, ext=".ogg", retries=2):
             cache_calls.append({"url": url, "ext": ext, "retries": retries})
-            return "/tmp/hermes/audio/audio_123.webm"
+            arquivo_audio = tmp_path / 'audio_123.webm'
+            arquivo_audio.write_bytes(b'audio ficticio')
+            return str(arquivo_audio)
 
         monkeypatch.setattr(adapter_module, "cache_audio_from_url", fake_cache_audio_from_url)
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
@@ -428,7 +435,7 @@ def test_poll_once_dispatches_inbound_audio_for_hermes_transcription(monkeypatch
         assert count == 1
         assert events[0].text == "(The user sent a message with no text content)"
         assert events[0].message_type.name == "VOICE"
-        assert events[0].media_urls == ["/tmp/hermes/audio/audio_123.webm"]
+        assert events[0].media_urls == [str(tmp_path / 'audio_123.webm')]
         assert events[0].media_types == ["audio/webm"]
         assert cache_calls == [{"url": "https://storage/audio.webm", "ext": ".webm", "retries": 2}]
         assert fake.posts == []
@@ -436,8 +443,13 @@ def test_poll_once_dispatches_inbound_audio_for_hermes_transcription(monkeypatch
     asyncio.run(run())
 
 
-def test_poll_once_dispatches_inbound_image_media(monkeypatch):
+def test_poll_once_dispatches_inbound_image_media(monkeypatch, tmp_path):
     async def run():
+        arquivo_imagem = tmp_path / 'foto.jpg'
+        arquivo_imagem.write_bytes(b'imagem ficticia')
+        async def armazenar_imagem_teste(*argumentos):
+            return str(arquivo_imagem)
+        monkeypatch.setattr(MyZapAdapter, '_armazenar_anexo_recebido', armazenar_imagem_teste)
         monkeypatch.setenv("HERMES_PROFILE", "atendimento")
         cfg = PlatformConfig(enabled=True, extra={"base_url": "https://example.test/api/v1", "api_key": "key"})
         a = MyZapAdapter(cfg)
@@ -472,7 +484,7 @@ def test_poll_once_dispatches_inbound_image_media(monkeypatch):
         count = await a.poll_once()
         assert count == 1
         assert events[0].text == "Comprovante"
-        assert events[0].media_urls == ["https://storage/foto.jpg"]
+        assert events[0].media_urls == [str(arquivo_imagem)]
         assert events[0].media_types == ["image/jpeg"]
 
     asyncio.run(run())

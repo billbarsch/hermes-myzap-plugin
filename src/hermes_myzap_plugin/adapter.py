@@ -1482,19 +1482,18 @@ class MyZapAdapter(BasePlatformAdapter):
         media_types: List[str] = []
 
         for attachment in attachments:
-            url = attachment_url(attachment)
             mime_type = attachment_mime_type(attachment)
             kind = attachment_kind(attachment)
-            if kind == "audio" and url:
-                cached_url = await self._cache_audio_attachment(attachment)
-                media_urls.append(cached_url or url)
-                media_types.append(mime_type or "audio/ogg")
-                continue
-            if url:
-                media_urls.append(url)
-                media_types.append(mime_type or kind)
+            caminho_local = await self._armazenar_anexo_recebido(attachment)
+            if caminho_local:
+                media_urls.append(caminho_local)
+                media_types.append(mime_type or ("audio/ogg" if kind == "audio"
+                    else mimetypes.guess_type(attachment_name(attachment))[0] or "application/octet-stream"))
+            else:
+                nome_anexo = json.dumps(attachment_name(attachment), ensure_ascii=False)
+                text += f"\n[Anexo {nome_anexo} indisponivel: solicite o reenvio antes de analisar seu conteudo.]"
 
-        if any(attachment_kind(attachment) == "audio" for attachment in attachments) and is_media_summary_text(text):
+        if media_urls and any(attachment_kind(attachment) == "audio" for attachment in attachments) and is_media_summary_text(text):
             text = "(The user sent a message with no text content)"
 
         if attachments or is_media_summary_text(text):
@@ -1524,6 +1523,37 @@ class MyZapAdapter(BasePlatformAdapter):
             return cached_path
         except Exception as exc:
             logger.warning("[myzap] failed to cache voice: %s", exc)
+            return ""
+
+    async def _armazenar_anexo_recebido(self, anexo: Dict[str, Any]) -> str:
+        endereco = attachment_url(anexo)
+        if not endereco or not safe_download_url(endereco):
+            return ""
+        try:
+            tipo = attachment_kind(anexo)
+            if tipo == "audio":
+                caminho = await self._cache_audio_attachment(anexo)
+            else:
+                from gateway.platforms.base import _cache_media_from_url, cache_media_bytes
+
+                nome = attachment_name(anexo)
+                tipo_midia = attachment_mime_type(anexo)
+                def armazenar_conteudo(conteudo, nome_arquivo):
+                    midia = cache_media_bytes(conteudo, filename=nome_arquivo, mime_type=tipo_midia,
+                        default_kind="image" if tipo == "sticker" else tipo)
+                    if midia is None:
+                        raise ValueError("Conteudo de midia invalido")
+                    return midia.path
+
+                caminho = await _cache_media_from_url(endereco, nome, 2,
+                    media_type="image" if tipo == "sticker" else tipo,
+                    accept=tipo_midia or "application/octet-stream",
+                    cache_fn=armazenar_conteudo, log_label="MyZap")
+            if not caminho or not Path(caminho).is_absolute() or not Path(caminho).is_file():
+                raise ValueError("Anexo precisa ser um arquivo local regular")
+            return str(caminho)
+        except Exception as erro:
+            logger.warning("[myzap] anexo nao armazenado no cache: %s", type(erro).__name__)
             return ""
 
     async def _dispatch_if_relevant(self, msg: Dict[str, Any]) -> bool:

@@ -71,6 +71,14 @@ O adapter também aceita:
 
 Para transcrição de áudio, use a configuração `stt` padrão do Hermes. O plugin MyZap apenas cacheia o áudio recebido e entrega o evento como voz para o gateway.
 
+## Anexos Recebidos
+
+XML, PDF, imagens, videos e audios sao baixados para o cache do perfil antes de entrar na sessao.
+`MessageEvent.media_urls` contem somente caminhos locais absolutos de arquivos regulares, como exigido pelo ingresso nativo do Hermes.
+O download reutiliza a protecao SSRF, a validacao de redirecionamentos e os limites de tamanho do cache nativo, sem encaminhar a chave MyZap para o endereco do anexo.
+Se o download ou a validacao falhar, a mensagem informa que o anexo esta indisponivel e solicita reenvio; a URL nunca e usada como se fosse caminho local.
+Os metadados e links originais continuam no contexto do canal, separados do arquivo local.
+
 ## Instalação para desenvolvimento
 
 ```bash
